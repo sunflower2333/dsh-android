@@ -271,8 +271,12 @@ class MobileAccessibilityService : AccessibilityService() {
                     }
                     is MobileCommand.UiXml -> if (command.source == "accessibility_xml") {
                         val root = rootInActiveWindow ?: throw NativeFailure("window_unavailable", "The active accessibility window is unavailable")
+                        val windowId = root.windowId
+                        val packageName = root.packageName?.toString()
                         val result = MobileUiXmlSerializer.serialize(adaptNode(root))
                         finish(MobileUseController.success(JSONObject().put("sessionId", grant.sessionId)
+                            .put("observationId", UUID.randomUUID().toString()).put("windowId", windowId)
+                            .put("packageName", packageName ?: JSONObject.NULL)
                             .put("source", command.source).put("xml", result.xml)
                             .put("truncated", result.truncated).put("nodes", result.nodes)))
                     } else throw NativeFailure("invalid_request", "Unsupported UI XML source")

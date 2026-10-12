@@ -34,9 +34,12 @@ after(async () => {
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const TOKEN = randomBytes(32).toString("hex"); // Fixture credentials only, never printed.
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=", "base64");
-const names = ["mobile_status", "mobile_observe", "mobile_click", "mobile_type", "mobile_scroll", "mobile_swipe", "mobile_back", "mobile_stop", "mobile_list_apps", "mobile_open_app"];
+const names = ["mobile_status", "mobile_observe", "mobile_click", "mobile_type", "mobile_scroll", "mobile_swipe", "mobile_back", "mobile_stop", "mobile_list_apps", "mobile_open_app", "mobile_adb_status", "mobile_adb_shell", "mobile_root_shell", "mobile_ui_xml"];
 const SESSION = randomUUID();
 const APPS = [{ packageName: "com.android.settings", label: "Settings" }, { packageName: "io.github.fixture.notes", label: "Notes" }];
+const XML = '<?xml version="1.0"?><hierarchy rotation="0"><node class="android.widget.Button" password="false" text="Open" content-desc="Open"/></hierarchy>';
+function capabilityStatus() { return { adbConfigured: true, adbEnabled: true, adbConnected: true, adbTarget: null, rootAvailable: true, rootEnabled: true }; }
+function shellResult(action, args) { return { exitCode: 0, stdout: action === "ui_xml" ? XML : "fixture-output", stderr: "", truncated: false, ...(action === "ui_xml" ? { source: "adb_uiautomator", target: args.serial ?? null } : action === "adb_shell" ? { target: args.serial ?? null } : {}) }; }
 function appList(sessionId = SESSION) { return { sessionId, apps: APPS, truncated: false, foregroundOnly: true }; }
 function status(active = true) { return { enabled: true, connected: true, active, sessionId: active ? SESSION : null, reason: active ? "user_grant" : "user_paused", currentPackage: "fixture.screen" }; }
 function observation(args) {
@@ -99,7 +102,7 @@ async function bridge(handler) {
 async function runtime(handler, { modalities = ["text"], android = true, modelInfoError = false } = {}) {
   const native = await bridge(handler ?? (call => {
     const action = call.path.split("/").at(-1);
-    return { ok: true, value: action === "observe" ? observation(call.args) : action === "status" || action === "stop" ? status(action !== "stop") : action === "list_apps" ? appList(call.args.sessionId) : { performed: true, action, observationId: call.args.observationId, ...(action === "open_app" ? { sessionId: call.args.sessionId, packageName: call.args.packageName, foregroundOnly: true } : {}) } };
+    return { ok: true, value: action === "observe" ? observation(call.args) : action === "status" || action === "stop" ? status(action !== "stop") : action === "adb_status" ? capabilityStatus() : ["adb_shell", "root_shell", "ui_xml"].includes(action) ? shellResult(action, call.args) : action === "list_apps" ? appList(call.args.sessionId) : { performed: true, action, observationId: call.args.observationId, ...(action === "open_app" ? { sessionId: call.args.sessionId, packageName: call.args.packageName, foregroundOnly: true } : {}) } };
   }));
   Object.assign(process.env, native.env, { DSH_ANDROID: android ? "1" : "0" });
   const ctx = new Context();
@@ -196,7 +199,7 @@ test("APK patch uses the real web-app plugin entry, is idempotent, and preserves
   await writeFile(join(lib, "index.js"), before.replace("function apply(ctx, config) {", "function apply_changed(ctx, config) {"));
   await assert.rejects(patchAndroidMobileTools(fixture), /Unsupported/);
 });
-test("real DSH prompt/tool registry exposes all ten tools through standing preset and agent scopes without secrets", async () => {
+test("real DSH prompt/tool registry exposes all fourteen tools through standing preset and agent scopes without secrets", async () => {
   const r = await runtime();
   const assembly = await r.ctx.systemPrompt.assemble({ scope: r.agent });
   assert.deepEqual(assembly.tools.map(tool => tool.name).filter(name => names.includes(name)).sort(), [...names].sort());
@@ -213,6 +216,45 @@ test("real DSH prompt/tool registry exposes all ten tools through standing prese
   const denied = await r.execute("mobile_status");
   assert.equal(denied.isError, true); assert.equal(policyCount, 1); assert.equal(r.native.calls.length, 0);
 });
+
+test("ADB/root/UI XML tools enforce bounded argv, source/target identity, redaction and stable native errors", async () => {
+  const r = await runtime(call => {
+    const action = call.path.split("/").at(-1);
+    if (action === "adb_status") return { ok: true, value: capabilityStatus() };
+    if (action === "ui_xml" && call.args.source === "accessibility_xml") return { ok: true, value: {
+      sessionId: call.args.sessionId, source: "accessibility_xml", xml: '<?xml version="1.0"?><hierarchy><node password="true" text="fixture-secret" content-desc="fixture-secret"/></hierarchy>', truncated: false, nodes: 1,
+      observationId: randomUUID(), windowId: 1, packageName: "fixture.screen",
+    } };
+    if (action === "ui_xml") return { ok: true, value: { ...shellResult(action, call.args), source: "adb_uiautomator", target: call.args.serial ?? null } };
+    if (action === "root_shell") return { ok: true, value: shellResult(action, call.args) };
+    if (action === "adb_shell") return { ok: true, value: shellResult(action, call.args) };
+    return { ok: false, error: { code: "INTERNAL", message: TOKEN } };
+  });
+  assert.deepEqual((await r.execute("mobile_adb_status")).value, capabilityStatus());
+  const shell = await r.execute("mobile_adb_shell", { sessionId: SESSION, serial: "usb-1", argv: ["shell", "getprop"], timeoutMs: 1000 });
+  assert.equal(shell.isError, false, JSON.stringify(shell.error));
+  assert.deepEqual(shell.value, { exitCode: 0, stdout: "fixture-output", stderr: "", truncated: false, target: "usb-1" });
+  assert.deepEqual(r.native.calls.at(-1).args, { sessionId: SESSION, serial: "usb-1", argv: ["shell", "getprop"], timeoutMs: 1000 });
+  const root = await r.execute("mobile_root_shell", { sessionId: SESSION, argv: ["id"] });
+  assert.equal(root.isError, false); assert.equal(root.value.stdout, "fixture-output");
+  const accessibility = await r.execute("mobile_ui_xml", { sessionId: SESSION, source: "accessibility_xml" });
+  assert.equal(accessibility.isError, false, JSON.stringify(accessibility.error));
+  assert.match(accessibility.value.xml, /\[REDACTED\]/); assert.ok(!accessibility.value.xml.includes("fixture-secret"));
+  const adbXml = await r.execute("mobile_ui_xml", { sessionId: SESSION, source: "adb_uiautomator", serial: "usb-1" });
+  assert.equal(adbXml.isError, false, JSON.stringify(adbXml.error)); assert.equal(adbXml.value.target, "usb-1"); assert.equal(adbXml.value.nodes, 1);
+  const calls = r.native.calls.length;
+  for (const args of [
+    { sessionId: SESSION, argv: [] }, { sessionId: SESSION, argv: ["shell", "echo;id"] },
+    { sessionId: SESSION, argv: ["shell"], timeoutMs: 99 }, { sessionId: SESSION, argv: ["shell"], serial: "usb/1" },
+  ]) { assert.equal(code(await r.execute("mobile_adb_shell", args)), "MOBILE_INVALID_REQUEST"); }
+  assert.equal(r.native.calls.length, calls);
+  const malformed = await runtime(call => ({ ok: true, value: { sessionId: call.args.sessionId, source: "accessibility_xml", xml: "<hierarchy><node>", truncated: false, nodes: 1 } }));
+  assert.equal(code(await malformed.execute("mobile_ui_xml", { sessionId: SESSION, source: "accessibility_xml" })), "MOBILE_INVALID_RESPONSE");
+  const errors = await runtime(() => ({ ok: false, error: { code: "ADB_DISABLED", message: TOKEN } }));
+  const disabled = await errors.execute("mobile_adb_shell", { sessionId: SESSION, argv: ["shell"] });
+  assert.equal(code(disabled), "MOBILE_ADB_DISABLED"); assert.ok(!JSON.stringify(disabled).includes(TOKEN));
+});
+
 test("the actual DSH AgentLoop discovers, dispatches and logs mobile tools through its model request/result cycle", async () => {
   const r = await runtime(undefined, { modalities: ["text", "image"] });
   const [{ AgentRegistry }, { SessionStore }, { SessionProjectionRegistry }, { AgentLoop }] = await Promise.all([
