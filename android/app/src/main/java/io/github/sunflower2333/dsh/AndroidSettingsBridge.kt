@@ -29,11 +29,13 @@ internal class AndroidSettingsBridge(
     private val activity: Activity,
     private val webView: WebView,
     private val trustedPage: () -> Boolean,
+    private val requestAdbFile: () -> Boolean = { false },
 ) {
     private val lease = AndroidSettingsGestureLease()
     private var ports: Array<WebMessagePort>? = null
     private var foreground = false
     private var permissionRequestPending = false
+    private var adbImportPending = false
     private val seenIds = LinkedHashSet<String>()
     private var tapDown: Pair<Float, Float>? = null
     private var tapStartedAt = 0L
@@ -74,6 +76,7 @@ internal class AndroidSettingsBridge(
         lease.invalidate()
         tapDown = null
         seenIds.clear()
+        adbImportPending = false
         ports?.forEach { runCatching { it.close() } }
         ports = null
     }
@@ -136,6 +139,30 @@ internal class AndroidSettingsBridge(
         return true
     }
 
+    /** Completes the user initiated ADB executable picker without retaining a
+     * provider grant. Import is copied into app private storage by the
+     * capability manager, and status is pushed only after the copy finishes. */
+    fun onAdbFileResult(resultCode: Int, data: Intent?): Boolean {
+        if (!adbImportPending) return false
+        adbImportPending = false
+        val uri = data?.data?.takeIf { it.scheme == "content" }
+        if (resultCode != Activity.RESULT_OK || uri == null || !trustedPage()) {
+            reply(null, false, if (resultCode == Activity.RESULT_CANCELED) "import_cancelled" else "import_failed")
+            return true
+        }
+        Thread({
+            val result = runCatching { MobileUseController.capabilities(activity).importAdb(uri) }
+                .getOrElse { JSONObject().put("ok", false).put("error", JSONObject().put("code", "IMPORT_FAILED")) }
+            activity.runOnUiThread {
+                if (!activity.isFinishing && !activity.isDestroyed && trustedPage()) {
+                    if (result.optBoolean("ok")) publishStatus()
+                    else reply(null, false, "import_failed")
+                }
+            }
+        }, "dsh-adb-import").apply { isDaemon = true }.start()
+        return true
+    }
+
     private fun parse(data: String): AndroidSettingsCommand {
         val entries = ArrayList<Pair<String, Any?>>(3)
         JsonReader(StringReader(data)).use { reader ->
@@ -179,6 +206,22 @@ internal class AndroidSettingsBridge(
                     }
                 }
                 "set-feedback" -> { MobileFeedbackSettings.setFromUser(activity, requireNotNull(command.enabled)); null }
+                "open-adb-file" -> {
+                    if (adbImportPending) "unavailable"
+                    else if (requestAdbFile()) { adbImportPending = true; null } else "settings_unavailable"
+                }
+                "set-adb-enabled" -> {
+                    val result = MobileUseController.capabilities(activity).setAdbEnabled(requireNotNull(command.enabled))
+                    if (result.optBoolean("ok", true)) null else capabilityError(result)
+                }
+                "set-root-enabled" -> {
+                    val result = MobileUseController.capabilities(activity).setRootEnabled(requireNotNull(command.enabled))
+                    if (result.optBoolean("ok", true)) null else capabilityError(result)
+                }
+                "set-adb-target" -> {
+                    val result = MobileUseController.capabilities(activity).setAdbTarget(command.serial)
+                    if (result.optBoolean("ok", true)) null else capabilityError(result)
+                }
                 "open-accessibility" -> openSettings(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                 "open-battery" -> openSettings(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
                 "open-notifications" -> configureNotifications()
@@ -211,6 +254,7 @@ internal class AndroidSettingsBridge(
 
     private fun snapshot(): JSONObject {
         val native = MobileUseController.status(activity)
+        val capabilities = MobileUseController.capabilities(activity).status()
         val runtime = DshService.runtimeTaskStatus
         val enabled = native.getBoolean("enabled")
         val connected = native.getBoolean("connected")
@@ -244,6 +288,13 @@ internal class AndroidSettingsBridge(
                 .put("reason", reason).put("currentPackage", AndroidSettingsPolicy.safePackage(native.optString("currentPackage")) ?: JSONObject.NULL)
                 .put("feedback", MobileFeedbackSettings.enabled(activity))
                 .put("canAllow", AndroidSettingsPolicy.canAllow(enabled, connected, active, reason, runtime.hostRunning)))
+            .put("capabilities", JSONObject()
+                .put("adbConfigured", capabilities.optBoolean("adbConfigured"))
+                .put("adbEnabled", capabilities.optBoolean("adbEnabled"))
+                .put("adbConnected", capabilities.optBoolean("adbConnected"))
+                .put("adbTarget", capabilities.opt("adbTarget"))
+                .put("rootAvailable", capabilities.optBoolean("rootAvailable"))
+                .put("rootEnabled", capabilities.optBoolean("rootEnabled")))
             .put("runtime", JSONObject().put("hostRunning", runtime.hostRunning).put("connected", runtime.connected)
                 .put("running", runtime.running.coerceAtLeast(0)).put("waiting", runtime.waiting.coerceAtLeast(0))
                 .put("sessions", sessions).put("sessionsComplete", runtime.sessionsComplete && runtime.sessions.size <= 64))
@@ -255,6 +306,13 @@ internal class AndroidSettingsBridge(
     }
 
     private fun publishStatus() { if (foreground && trustedPage()) reply(null, true) }
+
+    private fun capabilityError(result: JSONObject): String = when {
+        result.optJSONObject("error")?.optString("code") == "ROOT_UNAVAILABLE" -> "root_unavailable"
+        result.optJSONObject("error")?.optString("code") == "ADB_UNAVAILABLE" -> "adb_unavailable"
+        result.optJSONObject("error")?.optString("code") == "INVALID_SERIAL" -> "invalid_target"
+        else -> "unavailable"
+    }
 
     private fun reply(id: String?, ok: Boolean, error: String? = null) {
         if (ports == null || !trustedPage() || activity.isDestroyed) return

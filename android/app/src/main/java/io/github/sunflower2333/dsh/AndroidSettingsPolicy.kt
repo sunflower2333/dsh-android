@@ -1,7 +1,7 @@
 package io.github.sunflower2333.dsh
 
 internal data class AndroidSettingsCommand(val id: String, val type: String, val enabled: Boolean? = null,
-    val locale: String? = null)
+    val locale: String? = null, val serial: String? = null)
 
 /** A small protocol shared by the real DSH settings page and its private native port. */
 internal object AndroidSettingsPolicy {
@@ -9,7 +9,9 @@ internal object AndroidSettingsPolicy {
     private val idPattern = Regex("[A-Za-z0-9._:-]{1,64}")
     private val packagePattern = Regex("[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+")
     private val types = setOf("status", "open-accessibility", "allow-control", "pause-control",
-        "set-feedback", "open-notifications", "open-battery", "sync-language")
+        "set-feedback", "open-notifications", "open-battery", "sync-language", "open-adb-file",
+        "set-adb-enabled", "set-root-enabled", "set-adb-target")
+    private val serialPattern = Regex("[A-Za-z0-9._:-]{0,128}")
     private val reasons = setOf("disabled", "disconnected", "device_locked", "user_paused", "user_grant",
         "host_started", "host_stopped", "service_disconnected", "service_interrupted", "unavailable")
 
@@ -18,7 +20,7 @@ internal object AndroidSettingsPolicy {
         require(entries.size in 2..3)
         require(entries.map { it.first }.toSet().size == entries.size)
         val fields = entries.toMap()
-        require(fields.keys.all { it in setOf("id", "type", "enabled", "locale") })
+        require(fields.keys.all { it in setOf("id", "type", "enabled", "locale", "serial") })
         val id = fields["id"] as? String ?: throw IllegalArgumentException("Invalid settings request")
         val type = fields["type"] as? String ?: throw IllegalArgumentException("Invalid settings request")
         require(idPattern.matches(id) && type in types)
@@ -28,7 +30,13 @@ internal object AndroidSettingsPolicy {
             require(DshUiLanguagePolicy.isSupported(locale))
             return AndroidSettingsCommand(id, type, locale = locale)
         }
-        val enabled = if (type == "set-feedback") {
+        if (type == "set-adb-target") {
+            require(fields.keys == setOf("id", "type", "serial"))
+            val serial = fields["serial"] as? String ?: throw IllegalArgumentException("Invalid settings request")
+            require(serialPattern.matches(serial))
+            return AndroidSettingsCommand(id, type, serial = serial.ifEmpty { null })
+        }
+        val enabled = if (type == "set-feedback" || type == "set-adb-enabled" || type == "set-root-enabled") {
             require(fields.keys == setOf("id", "type", "enabled"))
             fields["enabled"] as? Boolean ?: throw IllegalArgumentException("Invalid settings request")
         } else {

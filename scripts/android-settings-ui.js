@@ -13,8 +13,8 @@
   var languageInFlight = null;
   var snapshot = Object.freeze({ status: null, error: null, connected: false });
   var reasons = ["disabled", "disconnected", "device_locked", "user_paused", "user_grant", "host_started", "host_stopped", "service_disconnected", "service_interrupted", "unavailable"];
-  var errors = ["invalid_request", "user_gesture_required", "control_unavailable", "settings_unavailable", "permission_request_pending", "unavailable"];
-  var actions = ["open-accessibility", "allow-control", "pause-control", "set-feedback", "open-notifications", "open-battery"];
+  var errors = ["invalid_request", "user_gesture_required", "control_unavailable", "settings_unavailable", "permission_request_pending", "import_cancelled", "import_failed", "adb_unavailable", "root_unavailable", "invalid_target", "unavailable"];
+  var actions = ["open-accessibility", "allow-control", "pause-control", "set-feedback", "open-notifications", "open-battery", "open-adb-file", "set-adb-enabled", "set-root-enabled", "set-adb-target"];
 
   function nullableCount(value) {
     return value === null || (Number.isSafeInteger(value) && value >= 0);
@@ -48,7 +48,7 @@
 
   function validStatus(value) {
     if (!value || typeof value !== "object") return null;
-    var m = value.mobile, r = value.runtime, n = value.notifications, b = value.battery;
+    var m = value.mobile, r = value.runtime, n = value.notifications, b = value.battery, c = value.capabilities;
     var sessions = r && validSessions(r.sessions);
     if (!m || !r || !n || !b ||
       [m.enabled, m.connected, m.active, m.feedback, m.canAllow, r.hostRunning, r.connected,
@@ -60,6 +60,11 @@
         !/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/.test(m.currentPackage))) ||
       !Number.isSafeInteger(r.running) || r.running < 0 || r.running > 100000 ||
       !Number.isSafeInteger(r.waiting) || r.waiting < 0 || r.waiting > 100000) return null;
+    if (c !== undefined && (!c || typeof c !== "object" || typeof c.adbConfigured !== "boolean" ||
+      typeof c.adbEnabled !== "boolean" || typeof c.adbConnected !== "boolean" ||
+      typeof c.rootAvailable !== "boolean" || typeof c.rootEnabled !== "boolean" ||
+      (c.adbTarget !== null && (typeof c.adbTarget !== "string" || c.adbTarget.length > 128 ||
+        !/^[A-Za-z0-9._:-]+$/.test(c.adbTarget))))) return null;
     // Copy only the agreed display fields. Session IDs are needed for the
     // existing Controller-owned opener and never appear as user-visible text.
     return Object.freeze({
@@ -70,7 +75,14 @@
       notifications: Object.freeze({ enabled: n.enabled, permissionRequired: n.permissionRequired,
         permissionGranted: n.permissionGranted, channelsDisabled: n.channelsDisabled,
         }),
-      battery: Object.freeze({ unrestricted: b.unrestricted })
+      battery: Object.freeze({ unrestricted: b.unrestricted }),
+      capabilities: c === undefined ? null : (c && typeof c === "object" &&
+        typeof c.adbConfigured === "boolean" && typeof c.adbEnabled === "boolean" &&
+        typeof c.adbConnected === "boolean" && typeof c.rootAvailable === "boolean" &&
+        typeof c.rootEnabled === "boolean" && (c.adbTarget === null ||
+          (typeof c.adbTarget === "string" && c.adbTarget.length <= 128 && /^[A-Za-z0-9._:-]+$/.test(c.adbTarget))) ?
+        Object.freeze({ adbConfigured: c.adbConfigured, adbEnabled: c.adbEnabled, adbConnected: c.adbConnected,
+          adbTarget: c.adbTarget, rootAvailable: c.rootAvailable, rootEnabled: c.rootEnabled }) : null)
     });
   }
 
@@ -122,12 +134,14 @@
     }
   }
 
-  function send(type, enabled, locale) {
+  function send(type, enabled, locale, serial) {
     if (!port) return Promise.reject(new Error("unavailable"));
     if (Object.keys(pending).length >= 4) return Promise.reject(new Error("unavailable"));
     var id = "settings-" + (++nextId);
     var message = { id: id, type: type };
     if (type === "set-feedback") message.enabled = enabled;
+    if (type === "set-adb-enabled" || type === "set-root-enabled") message.enabled = enabled;
+    if (type === "set-adb-target") message.serial = serial;
     if (type === "sync-language") message.locale = locale;
     return new Promise(function (resolve, reject) {
       pending[id] = { resolve: resolve, reject: reject, timer: window.setTimeout(function () {
@@ -235,13 +249,15 @@
         if (localeOwner === owner) { localeOwner = null; languageAttempt = null; }
       };
     },
-    request: function (type, enabled, event) {
+    request: function (type, enabled, event, serial) {
       if (actions.indexOf(type) === -1 || (type === "set-feedback" && typeof enabled !== "boolean") ||
-        (type !== "set-feedback" && enabled !== undefined)) return Promise.reject(new Error("invalid_request"));
+        ((type === "set-adb-enabled" || type === "set-root-enabled") && typeof enabled !== "boolean") ||
+        (type !== "set-feedback" && type !== "set-adb-enabled" && type !== "set-root-enabled" && enabled !== undefined) ||
+        (type === "set-adb-target" && (typeof serial !== "string" || serial.length > 128 || !/^[A-Za-z0-9._:-]*$/.test(serial)))) return Promise.reject(new Error("invalid_request"));
       // The bridge independently consumes a real native WebView touch. This
       // DOM check is an extra guard, never the source of control permission.
       if (!event || event.isTrusted !== true) return Promise.reject(new Error("user_gesture_required"));
-      return send(type, enabled);
+      return send(type, enabled, undefined, serial);
     }
   });
 })();

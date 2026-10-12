@@ -78,9 +78,9 @@ class MainActivity : Activity() {
     private var workspaceRequest: WorkspaceRequest? = null
     private var workspaceDeliveryPending = false
     private var androidSettingsPortInstalled = false
-    private val androidSettingsBridge by lazy { AndroidSettingsBridge(this, webView) {
+    private val androidSettingsBridge by lazy { AndroidSettingsBridge(this, webView, {
         !terminalError && readyHostConfirmed && themeReadAllowed && WebNavigation.isCurrentOrigin(webView.url, lastReadyLaunchUrl)
-    } }
+    }, { requestAdbFilePicker() }) }
     private val webDiagnostics by lazy { StartupDiagnostics(File(cacheDir, "dsh-webview.log")) }
     // Keep the callback behind an Any-typed slot: OnBackInvokedCallback was
     // introduced in API 33 while this client still supports API 30.
@@ -652,6 +652,9 @@ class MainActivity : Activity() {
             savePendingDownload()
             return
         }
+        if (requestCode == ADB_FILE_REQUEST) {
+            if (androidSettingsBridge.onAdbFileResult(resultCode, data)) return
+        }
         if (requestCode != FILE_SELECTION_REQUEST) return
         val results = if (resultCode == RESULT_OK && data?.clipData != null) {
             val clips = data.clipData!!
@@ -661,6 +664,20 @@ class MainActivity : Activity() {
             ?.filter { it.scheme == "content" }?.toTypedArray()
         pendingFileSelection?.onReceiveValue(selected)
         pendingFileSelection = null
+    }
+
+    private fun requestAdbFilePicker(): Boolean {
+        if (isFinishing || isDestroyed || !readyHostConfirmed) return false
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "application/octet-stream"
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return try {
+            startActivityForResult(intent, ADB_FILE_REQUEST)
+            true
+        } catch (_: ActivityNotFoundException) { false }
+        catch (_: SecurityException) { false }
     }
 
     /** The DSH WebUI owns consent and presentation; Android opens only system surfaces. */
@@ -1058,6 +1075,7 @@ class MainActivity : Activity() {
         private const val STATE_CONFIGURATION_EXPORT = "dsh.configuration.export"
         private const val STATE_NOTIFICATION_SESSION = "dsh.notification.session"
         private const val FILE_SELECTION_REQUEST = 43
+        private const val ADB_FILE_REQUEST = 51
         private const val DOWNLOAD_DESTINATION_REQUEST = 44
         private const val CONFIGURATION_EXPORT_REQUEST = 45
         private const val WORKSPACE_PERMISSION_REQUEST = 49

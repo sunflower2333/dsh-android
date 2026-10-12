@@ -77,7 +77,9 @@ class AndroidCapabilityManager(
     private val adbEnabledState = AtomicBoolean(
         prefs?.getBoolean("adb_enabled", false) == true && adbFile.isFile
     )
-    private val rootEnabledState = AtomicBoolean(prefs?.getBoolean("root_enabled", false) == true)
+    // A stale preference must not re-enable root after su is removed or the
+    // device changes. Root remains an explicit opt-in on every process start.
+    private val rootEnabledState = AtomicBoolean(prefs?.getBoolean("root_enabled", false) == true && resolveRoot() != null)
     @Volatile private var adbConnectedState = adbEnabledState.get() && adbFile.isFile
     @Volatile private var targetState: String? = prefs?.getString("adb_target", null)
     @Volatile private var rootAvailableState: Boolean = resolveRoot() != null

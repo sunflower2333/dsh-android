@@ -11,7 +11,7 @@ class AndroidSettingsPolicyTest {
     }
 
     @Test fun commandsCannotSmuggleControlTokensOrCoerceFeedbackConsent() {
-        val operations = listOf("status", "open-accessibility", "allow-control", "pause-control", "open-notifications", "open-battery")
+        val operations = listOf("status", "open-accessibility", "allow-control", "pause-control", "open-notifications", "open-battery", "open-adb-file")
         for (type in operations) {
             assertEquals(type, AndroidSettingsPolicy.parse(fields(type)).type)
             rejected(fields(type) + ("enabled" to true))
@@ -21,6 +21,13 @@ class AndroidSettingsPolicyTest {
         for (value in listOf(null, "true", 1, emptyList<Any>())) rejected(fields("set-feedback") + ("enabled" to value))
         rejected(fields("set-feedback"))
         rejected(fields("grant"))
+        assertEquals(false, AndroidSettingsPolicy.parse(fields("set-adb-enabled") + ("enabled" to false)).enabled)
+        assertEquals(true, AndroidSettingsPolicy.parse(fields("set-root-enabled") + ("enabled" to true)).enabled)
+        assertNull(AndroidSettingsPolicy.parse(fields("set-adb-target") + ("serial" to "")).serial)
+        assertEquals("emulator-5554", AndroidSettingsPolicy.parse(fields("set-adb-target") + ("serial" to "emulator-5554")).serial)
+        for (serial in listOf("bad serial", "x".repeat(129), "serial\n")) {
+            rejected(fields("set-adb-target") + ("serial" to serial))
+        }
     }
 
     @Test fun duplicateFieldsRejectBeforeTheyCanReplaceActionOrIdentity() {

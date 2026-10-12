@@ -52,6 +52,9 @@ const css = `
 .dshAndroidSettingsSwitch[aria-checked=true]:before{background:var(--dsw-alias-brand-primary)}
 .dshAndroidSettingsSwitch>span{position:relative}
 .dshAndroidSettingsError{color:var(--dsw-alias-state-error-primary)!important}
+.dshAndroidCapabilitySettings{display:flex;flex-direction:column;gap:12px;padding-top:8px;border-top:.5px solid var(--dsw-alias-border-l2)}
+.dshAndroidCapabilitySettings h3{margin:0;font-size:15px;font-weight:600;line-height:22px}
+.dshAndroidCapabilitySettings input{min-height:40px;min-width:160px;max-width:100%;padding:8px 10px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-fill-tertiary);color:var(--dsw-alias-label-primary)}
 .dshAndroidSessionList{display:flex;flex-direction:column;gap:12px;min-width:0}
 .dshAndroidSessionList h3{margin:0;font-size:14px;font-weight:500;line-height:22px}
 .dshAndroidSession{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-md,12px);padding:12px;min-width:0;background:var(--dsw-alias-settings-card-fill)}
@@ -82,10 +85,10 @@ const sectionCode = `    const androidSettingsStyleId = "@deepseek-ai/dsh-client
       const [error, setError] = (0, react.useState)(null);
       const mounted = (0, react.useRef)(true);
       (0, react.useEffect)(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-      const perform = (type, enabled, event) => {
+      const perform = (type, enabled, event, serial) => {
         if (busy || !host) return;
         setBusy(true); setError(null);
-        host.request(type, enabled, event).catch((failure) => {
+        host.request(type, enabled, event, serial).catch((failure) => {
           if (mounted.current) setError(failure.message);
         }).finally(() => { if (mounted.current) setBusy(false); });
       };
@@ -102,11 +105,11 @@ const sectionCode = `    const androidSettingsStyleId = "@deepseek-ai/dsh-client
       const key = ["user_gesture_required", "control_unavailable", "settings_unavailable", "permission_request_pending"].includes(error) ? error : "unavailable";
       return (0, react_jsx_runtime.jsx)("p", { role: "alert", className: "dshAndroidSettingsError", children: t("androidSettings.error." + key) });
     }
-    function AndroidSettingsButton({ t, label, type, busy, connected, perform, disabled = false }) {
+    function AndroidSettingsButton({ t, label, type, enabled, busy, connected, perform, onClick, disabled = false }) {
       return (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.Button, {
         variant: type === "allow-control" ? "primary" : "outline", size: "sm", type: "button",
         disabled: busy || !connected || disabled, "data-dsh-android-action": type,
-        onClick: (event) => perform(type, undefined, event), children: t(label)
+        onClick: onClick || ((event) => perform(type, enabled, event)), children: t(label)
       });
     }
     function AndroidMobileUseSection({ t }) {
@@ -156,9 +159,48 @@ const sectionCode = `    const androidSettingsStyleId = "@deepseek-ai/dsh-client
               })
             ]
           }),
+          (0, react_jsx_runtime.jsx)(AndroidCapabilitySettings, { t, state, busy, perform }),
           (0, react_jsx_runtime.jsx)(AndroidSettingsError, { t, error: error || state.error })
         ]
       });
+    }
+    function AndroidCapabilitySettings({ t, state, busy, perform }) {
+      const capabilities = state.status && state.status.capabilities;
+      const [serial, setSerial] = (0, react.useState)(capabilities && capabilities.adbTarget || "");
+      const gesture = (0, react.useRef)(null);
+      (0, react.useEffect)(() => {
+        if (capabilities) setSerial(capabilities.adbTarget || "");
+      }, [capabilities && capabilities.adbTarget]);
+      if (!capabilities) return null;
+      const capture = (event) => {
+        const nativeEvent = event.nativeEvent || event;
+        gesture.current = nativeEvent;
+        setTimeout(() => { if (gesture.current === nativeEvent) gesture.current = null; }, 0);
+      };
+      const applyTarget = (event) => {
+        const nativeEvent = gesture.current;
+        gesture.current = null;
+        perform("set-adb-target", undefined, nativeEvent || event, serial);
+      };
+      return (0, react_jsx_runtime.jsxs)("div", { className: "dshAndroidCapabilitySettings", "data-dsh-android-capabilities": "", children: [
+        (0, react_jsx_runtime.jsx)("h3", { children: t("androidSecurity.heading") }),
+        (0, react_jsx_runtime.jsx)("p", { children: t("androidSecurity.description") }),
+        (0, react_jsx_runtime.jsxs)("dl", { children: [
+          (0, react_jsx_runtime.jsx)(AndroidSettingsRow, { label: t("androidSecurity.adbClient"), value: t(capabilities.adbConfigured ? "androidSettings.configured" : "androidSettings.notConfigured") }),
+          (0, react_jsx_runtime.jsx)(AndroidSettingsRow, { label: t("androidSecurity.adbConnection"), value: t(capabilities.adbConnected ? "androidSettings.connected" : "androidSettings.disconnected") }),
+          (0, react_jsx_runtime.jsx)(AndroidSettingsRow, { label: t("androidSecurity.rootAvailability"), value: t(capabilities.rootAvailable ? "androidSettings.available" : "androidSettings.unavailable") })
+        ] }),
+        (0, react_jsx_runtime.jsxs)("div", { className: "dshAndroidSettingsActions", children: [
+          (0, react_jsx_runtime.jsx)(AndroidSettingsButton, { t, label: "androidSecurity.importAdb", type: "open-adb-file", busy, connected: state.connected, perform }),
+          (0, react_jsx_runtime.jsx)(AndroidSettingsButton, { t, label: capabilities.adbEnabled ? "androidSecurity.disableAdb" : "androidSecurity.enableAdb", type: "set-adb-enabled", enabled: !capabilities.adbEnabled, busy, connected: state.connected, perform, disabled: !capabilities.adbConfigured }),
+          (0, react_jsx_runtime.jsx)(AndroidSettingsButton, { t, label: capabilities.rootEnabled ? "androidSecurity.disableRoot" : "androidSecurity.enableRoot", type: "set-root-enabled", enabled: !capabilities.rootEnabled, busy, connected: state.connected, perform, disabled: !capabilities.rootAvailable })
+        ] }),
+        (0, react_jsx_runtime.jsxs)("div", { className: "dshAndroidSettingsActions", onClickCapture: capture, children: [
+          (0, react_jsx_runtime.jsx)("input", { type: "text", value: serial, maxLength: 128, placeholder: t("androidSecurity.targetPlaceholder"), "aria-label": t("androidSecurity.target"), onChange: (event) => setSerial(event.target.value.replace(/[^A-Za-z0-9._:-]/g, "")) }),
+          (0, react_jsx_runtime.jsx)(AndroidSettingsButton, { t, label: "androidSecurity.saveTarget", type: "set-adb-target", busy, connected: state.connected, onClick: applyTarget })
+        ] }),
+        (0, react_jsx_runtime.jsx)("p", { children: t("androidSecurity.help") })
+      ] });
     }
     function androidSessionNumber(t, value, decimals = 0) {
       if (value === null) return t("androidRuntime.statsUnavailable");
@@ -263,6 +305,8 @@ const dictionaries = {
     "androidSettings.checking": "正在读取状态…",
     "androidSettings.on": "已开启", "androidSettings.off": "未开启",
     "androidSettings.connected": "已连接", "androidSettings.disconnected": "未连接",
+    "androidSettings.configured": "已配置", "androidSettings.notConfigured": "未配置",
+    "androidSettings.available": "可用", "androidSettings.unavailable": "不可用",
     "androidSettings.error.user_gesture_required": "请直接点击按钮完成此操作。",
     "androidSettings.error.control_unavailable": "手机控制暂不可用。请开启无障碍服务并解锁手机。",
     "androidSettings.error.settings_unavailable": "无法打开系统设置，请在 Android 设置中手动打开。",
@@ -276,6 +320,12 @@ const dictionaries = {
     "mobileUse.allow": "允许本次控制", "mobileUse.pause": "暂停控制",
     "mobileUse.grantHelp": "开启无障碍服务后，仍需在此手动允许控制。可随时在此或通知中暂停。",
     "mobileUse.feedback": "显示操作提示", "mobileUse.feedbackHelp": "标出点击、输入和滑动位置。提示不拦截触摸，也不会出现在截图中。",
+    "androidSecurity.heading": "ADB 与 Root Shell", "androidSecurity.description": "这些能力默认关闭。ADB 使用你选择的 ARM64 客户端；Root Shell 只有设备提供 su 时可用。启用后，MOBILEUSE 才能使用对应功能。",
+    "androidSecurity.adbClient": "ADB 客户端", "androidSecurity.adbConnection": "ADB 状态", "androidSecurity.rootAvailability": "Root Shell",
+    "androidSecurity.importAdb": "导入 ADB 客户端", "androidSecurity.enableAdb": "启用 ADB", "androidSecurity.disableAdb": "停用 ADB",
+    "androidSecurity.enableRoot": "启用 Root Shell", "androidSecurity.disableRoot": "停用 Root Shell",
+    "androidSecurity.target": "ADB 目标序列号", "androidSecurity.targetPlaceholder": "留空使用默认设备", "androidSecurity.saveTarget": "保存目标",
+    "androidSecurity.help": "ADB 目标只保存序列号，不保存配对凭据。停用能力会终止正在运行的子进程。",
     "androidRuntime.nav": "后台", "androidRuntime.heading": "后台与通知",
     "androidRuntime.service": "DSH 后台服务", "androidRuntime.connection": "任务状态连接",
     "androidRuntime.running": "运行中", "androidRuntime.stopped": "未运行",
@@ -311,6 +361,8 @@ const dictionaries = {
     "androidSettings.checking": "Reading status…",
     "androidSettings.on": "On", "androidSettings.off": "Off",
     "androidSettings.connected": "Connected", "androidSettings.disconnected": "Disconnected",
+    "androidSettings.configured": "Configured", "androidSettings.notConfigured": "Not configured",
+    "androidSettings.available": "Available", "androidSettings.unavailable": "Unavailable",
     "androidSettings.error.user_gesture_required": "Tap the button directly to perform this action.",
     "androidSettings.error.control_unavailable": "Phone control is unavailable. Enable Accessibility and unlock the device.",
     "androidSettings.error.settings_unavailable": "Could not open system settings. Open them manually in Android Settings.",
@@ -324,6 +376,12 @@ const dictionaries = {
     "mobileUse.allow": "Allow this control", "mobileUse.pause": "Pause control",
     "mobileUse.grantHelp": "After enabling Accessibility, allow control here manually. Pause here or from the notification at any time.",
     "mobileUse.feedback": "Show action feedback", "mobileUse.feedbackHelp": "Mark taps, typing, and swipes. Feedback does not intercept touch or appear in screenshots.",
+    "androidSecurity.heading": "ADB and Root Shell", "androidSecurity.description": "These capabilities are off by default. ADB uses an ARM64 client that you choose; Root Shell is available only when the device provides su. Enable each capability before MOBILEUSE can use it.",
+    "androidSecurity.adbClient": "ADB client", "androidSecurity.adbConnection": "ADB status", "androidSecurity.rootAvailability": "Root Shell",
+    "androidSecurity.importAdb": "Import ADB client", "androidSecurity.enableAdb": "Enable ADB", "androidSecurity.disableAdb": "Disable ADB",
+    "androidSecurity.enableRoot": "Enable Root Shell", "androidSecurity.disableRoot": "Disable Root Shell",
+    "androidSecurity.target": "ADB target serial", "androidSecurity.targetPlaceholder": "Empty uses default device", "androidSecurity.saveTarget": "Save target",
+    "androidSecurity.help": "Only the serial is stored; pairing credentials are not. Disabling a capability terminates its active child processes.",
     "androidRuntime.nav": "Background", "androidRuntime.heading": "Background & notifications",
     "androidRuntime.service": "DSH background service", "androidRuntime.connection": "Task status connection",
     "androidRuntime.running": "Running", "androidRuntime.stopped": "Stopped",
