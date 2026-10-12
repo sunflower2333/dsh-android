@@ -269,6 +269,13 @@ class MobileAccessibilityService : AccessibilityService() {
                             .put("sessionId", grant.sessionId).put("observationId", command.observationId)
                             .put("packageName", command.packageName).put("foregroundOnly", true)))
                     }
+                    is MobileCommand.UiXml -> if (command.source == "accessibility_xml") {
+                        val root = rootInActiveWindow ?: throw NativeFailure("window_unavailable", "The active accessibility window is unavailable")
+                        val result = MobileUiXmlSerializer.serialize(adaptNode(root))
+                        finish(MobileUseController.success(JSONObject().put("sessionId", grant.sessionId)
+                            .put("source", command.source).put("xml", result.xml)
+                            .put("truncated", result.truncated).put("nodes", result.nodes)))
+                    } else throw NativeFailure("invalid_request", "Unsupported UI XML source")
                     else -> throw NativeFailure("invalid_request", "Unsupported native phone action")
                 }
             } catch (error: MobileProtocolException) {
@@ -279,6 +286,19 @@ class MobileAccessibilityService : AccessibilityService() {
                 finish(MobileUseController.failure("internal", "The native phone action failed"))
             }
         }
+    }
+
+    private fun adaptNode(value: AccessibilityNodeInfo): MobileUiXmlSerializer.Node = object : MobileUiXmlSerializer.Node {
+        override val className get() = value.className?.toString(); override val viewId get() = value.viewIdResourceName
+        override val packageName get() = value.packageName?.toString()
+        override val bounds get() = Rect().also(value::getBoundsInScreen).let { "${it.left},${it.top},${it.right},${it.bottom}" }
+        override val enabled get() = value.isEnabled; override val visible get() = value.isVisibleToUser
+        override val clickable get() = value.isClickable; override val editable get() = value.isEditable
+        override val scrollable get() = value.isScrollable; override val password get() = value.isPassword
+        override val text get() = value.text?.toString(); override val description get() = value.contentDescription?.toString()
+        override fun childCount() = value.childCount
+        override fun childAt(index: Int) = value.getChild(index)?.let(::adaptNode)
+        override fun release() = value.recycle()
     }
 
     private fun requireGrant(grant: MobileUseController.Grant) {
