@@ -197,7 +197,9 @@ internal class MobileBridge(context: Context,
                         JsonToken.NUMBER -> { val number = reader.nextString(); number.toLongOrNull() ?: number.toDoubleOrNull() ?: throw IllegalArgumentException() }
                         JsonToken.NULL -> { require(structured); reader.nextNull(); null }
                         JsonToken.BEGIN_ARRAY -> {
-                            require(structured && depth == 0)
+                            // Mobile capability commands use a top-level argv array;
+                            // host events also use arrays. Nested arrays remain rejected.
+                            require(depth == 0)
                             reader.beginArray(); val items = ArrayList<Any?>()
                             while (reader.hasNext()) { require(items.size < 64); items.add(value(depth + 1)) }
                             reader.endArray(); items

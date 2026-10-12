@@ -15,6 +15,7 @@ object MobileUseController {
     private var session: String? = null
     private var generation = 0L
     private var reason = "user_paused"
+    private var capabilityManager: AndroidCapabilityManager? = null
     @Volatile private var currentPackage: String? = null
 
     fun status(context: Context): JSONObject {
@@ -79,6 +80,11 @@ object MobileUseController {
     internal fun updatePackage(value: String?) { currentPackage = value }
     internal fun hideFeedback() { synchronized(lock) { service?.hideFeedback() } }
 
+    /** Shared capability state for bridge requests and settings; never exposed to WebView code. */
+    internal fun capabilities(context: Context): AndroidCapabilityManager = synchronized(lock) {
+        capabilityManager ?: AndroidCapabilityManager(context.applicationContext).also { capabilityManager = it }
+    }
+
     internal data class Grant(val sessionId: String, val generation: Long, val service: MobileAccessibilityService)
 
     internal fun valid(grant: Grant): Boolean = synchronized(lock) {
@@ -88,6 +94,10 @@ object MobileUseController {
     internal fun execute(context: Context, command: MobileCommand, complete: (JSONObject) -> Unit) {
         if (command === MobileCommand.Status) {
             complete(success(status(context)))
+            return
+        }
+        if (command === MobileCommand.AdbStatus) {
+            complete(success(capabilities(context).status()))
             return
         }
         if (command === MobileCommand.Stop) {
@@ -104,6 +114,9 @@ object MobileUseController {
             is MobileCommand.Back -> command.sessionId
             is MobileCommand.ListApps -> command.sessionId
             is MobileCommand.OpenApp -> command.sessionId
+            is MobileCommand.AdbShell -> command.sessionId
+            is MobileCommand.RootShell -> command.sessionId
+            is MobileCommand.UiXml -> command.sessionId
             else -> null
         }
         val grant = synchronized(lock) {
@@ -116,7 +129,40 @@ object MobileUseController {
             complete(failure("locked", "Unlock the device before phone control"))
         }
         else if (grant == null) complete(failure("paused", "Phone control requires a current native user grant"))
-        else grant.service.execute(command, grant, complete)
+        else when (command) {
+            is MobileCommand.AdbShell -> {
+                val result = capabilities(context).executeAdb(
+                    grant.sessionId, command.serial, command.argv, command.timeoutMs
+                )
+                // Keep the requested target explicit in the response metadata. The
+                // manager may select a configured default when serial is omitted;
+                // never expose that value through an untrusted command error.
+                if (result.optBoolean("ok")) {
+                    result.optJSONObject("value")?.put("target", command.serial ?: JSONObject.NULL)
+                }
+                complete(result)
+            }
+            is MobileCommand.RootShell -> complete(capabilities(context).executeRoot(
+                grant.sessionId, command.argv, command.timeoutMs
+            ))
+            is MobileCommand.UiXml -> if (command.source == "adb_uiautomator") {
+                val result = capabilities(context).executeAdb(
+                    grant.sessionId, command.serial,
+                    listOf("shell", "uiautomator", "dump", "/dev/tty")
+                )
+                if (result.optBoolean("ok")) {
+                    result.optJSONObject("value")?.put("source", command.source)
+                        ?.put("target", command.serial ?: JSONObject.NULL)
+                }
+                complete(result)
+            } else {
+                // Accessibility XML serialization is owned by the service (Task 3).
+                // Keep the request on the service's serial queue so it shares the
+                // current-window, grant, and lock checks with observations.
+                grant.service.execute(command, grant, complete)
+            }
+            else -> grant.service.execute(command, grant, complete)
+        }
     }
 
     internal fun isDeviceLocked(context: Context): Boolean =

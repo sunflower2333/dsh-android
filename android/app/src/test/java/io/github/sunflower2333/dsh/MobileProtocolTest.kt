@@ -37,6 +37,33 @@ class MobileProtocolTest {
         }
     }
 
+    @Test fun capabilityOperationsUseStrictBoundedSchemas() {
+        assertSame(MobileCommand.AdbStatus, MobileProtocol.parse(MobileOperation.ADB_STATUS, emptyMap()))
+        assertEquals(MobileCommand.AdbShell(session, "usb-1", listOf("shell", "id"), 100L),
+            MobileProtocol.parse(MobileOperation.ADB_SHELL, mapOf("sessionId" to session, "serial" to "usb-1", "argv" to listOf("shell", "id"), "timeoutMs" to 100)))
+        assertEquals(MobileCommand.RootShell(session, listOf("id", "-u"), 5_000L),
+            MobileProtocol.parse(MobileOperation.ROOT_SHELL, mapOf("sessionId" to session, "argv" to listOf("id", "-u"))))
+        assertEquals(MobileCommand.UiXml(session, "accessibility_xml", null),
+            MobileProtocol.parse(MobileOperation.UI_XML, mapOf("sessionId" to session, "source" to "accessibility_xml")))
+        assertEquals(MobileCommand.UiXml(session, "adb_uiautomator", "usb-1"),
+            MobileProtocol.parse(MobileOperation.UI_XML, mapOf("sessionId" to session, "source" to "adb_uiautomator", "serial" to "usb-1")))
+        listOf(
+            mapOf("sessionId" to session, "argv" to emptyList<String>()),
+            mapOf("sessionId" to session, "argv" to listOf("ok", 2)),
+            mapOf("sessionId" to session, "argv" to List(33) { "arg" }),
+            mapOf("sessionId" to session, "argv" to listOf("x".repeat(4097))),
+            mapOf("sessionId" to session, "serial" to "bad serial", "argv" to listOf("id")),
+            mapOf("sessionId" to session, "serial" to null, "argv" to listOf("id")),
+            mapOf("sessionId" to session, "argv" to listOf("id;whoami")),
+            mapOf("sessionId" to session, "argv" to listOf("id\\\nwhoami")),
+            mapOf("sessionId" to session, "argv" to listOf("id"), "timeoutMs" to 99),
+            mapOf("sessionId" to session, "argv" to listOf("id"), "timeoutMs" to 100.5),
+            mapOf("sessionId" to session, "source" to "accessibility_xml", "serial" to "usb-1"),
+        ).forEach { fields ->
+            expectFailure { MobileProtocol.parse(if (fields.containsKey("source")) MobileOperation.UI_XML else MobileOperation.ADB_SHELL, fields) }
+        }
+    }
+
     @Test fun observeDefaultsToAccessibilityTextWithoutCoercingScreenshotConsent() {
         assertEquals(
             MobileCommand.Observe(session, false),
@@ -242,6 +269,10 @@ class MobileProtocolTest {
         MobileOperation.BACK -> base
         MobileOperation.LIST_APPS -> mapOf("sessionId" to session)
         MobileOperation.OPEN_APP -> base + ("packageName" to "com.android.settings")
+        MobileOperation.ADB_STATUS -> emptyMap()
+        MobileOperation.ADB_SHELL -> mapOf("sessionId" to session, "argv" to listOf("shell"))
+        MobileOperation.ROOT_SHELL -> mapOf("sessionId" to session, "argv" to listOf("id"))
+        MobileOperation.UI_XML -> mapOf("sessionId" to session, "source" to "accessibility_xml")
     }
 
     private fun expectFailure(

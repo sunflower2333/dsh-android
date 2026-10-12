@@ -1,7 +1,8 @@
 package io.github.sunflower2333.dsh
 
 internal enum class MobileOperation {
-    STATUS, OBSERVE, CLICK, TYPE, SWIPE, SCROLL, BACK, STOP, LIST_APPS, OPEN_APP
+    STATUS, OBSERVE, CLICK, TYPE, SWIPE, SCROLL, BACK, STOP, LIST_APPS, OPEN_APP,
+    ADB_STATUS, ADB_SHELL, ROOT_SHELL, UI_XML
 }
 
 internal sealed interface MobileCommand {
@@ -39,6 +40,10 @@ internal sealed interface MobileCommand {
         val direction: String) : MobileCommand
     data class ListApps(val sessionId: String) : MobileCommand
     data class OpenApp(val sessionId: String, val observationId: String?, val packageName: String) : MobileCommand
+    object AdbStatus : MobileCommand
+    data class AdbShell(val sessionId: String, val serial: String?, val argv: List<String>, val timeoutMs: Long) : MobileCommand
+    data class RootShell(val sessionId: String, val argv: List<String>, val timeoutMs: Long) : MobileCommand
+    data class UiXml(val sessionId: String, val source: String, val serial: String?) : MobileCommand
 
     object Stop : MobileCommand
 }
@@ -52,6 +57,7 @@ internal object MobileProtocol {
     private const val MAX_COORDINATE = 100_000.0
     private const val MAX_TEXT_LENGTH = 4096
     private val identifier = Regex("[A-Za-z0-9._:-]{1,128}")
+    private val forbiddenShellCharacters = Regex("[;&|$`()<>\\\"'\\\\\\u0000-\\r\\n]")
     private val sessionFields = setOf("sessionId", "observationId")
 
     fun operation(path: String): MobileOperation = when (path) {
@@ -65,6 +71,10 @@ internal object MobileProtocol {
         "${PATH_PREFIX}stop" -> MobileOperation.STOP
         "${PATH_PREFIX}list_apps" -> MobileOperation.LIST_APPS
         "${PATH_PREFIX}open_app" -> MobileOperation.OPEN_APP
+        "${PATH_PREFIX}adb_status" -> MobileOperation.ADB_STATUS
+        "${PATH_PREFIX}adb_shell" -> MobileOperation.ADB_SHELL
+        "${PATH_PREFIX}root_shell" -> MobileOperation.ROOT_SHELL
+        "${PATH_PREFIX}ui_xml" -> MobileOperation.UI_XML
         else -> throw MobileProtocolException("unknown_operation", "Unknown mobile operation.")
     }
 
@@ -80,6 +90,10 @@ internal object MobileProtocol {
             MobileOperation.BACK -> sessionFields
             MobileOperation.LIST_APPS -> setOf("sessionId")
             MobileOperation.OPEN_APP -> sessionFields + "packageName"
+            MobileOperation.ADB_STATUS -> emptySet()
+            MobileOperation.ADB_SHELL -> setOf("sessionId", "serial", "argv", "timeoutMs")
+            MobileOperation.ROOT_SHELL -> setOf("sessionId", "argv", "timeoutMs")
+            MobileOperation.UI_XML -> setOf("sessionId", "source", "serial")
         }
         if (fields.keys.any { it !in allowedFields }) {
             invalid("Request contains unknown fields.")
@@ -125,6 +139,23 @@ internal object MobileProtocol {
             MobileOperation.OPEN_APP -> MobileCommand.OpenApp(requireIdentifier(fields, "sessionId"),
                 if (fields.containsKey("observationId")) requireIdentifier(fields, "observationId") else null,
                 MobileLauncherPolicy.requirePackage(fields["packageName"]))
+            MobileOperation.ADB_STATUS -> MobileCommand.AdbStatus
+            MobileOperation.ADB_SHELL -> MobileCommand.AdbShell(
+                requireIdentifier(fields, "sessionId"), optionalIdentifier(fields, "serial"),
+                requireArgv(fields), requireShellTimeout(fields)
+            )
+            MobileOperation.ROOT_SHELL -> MobileCommand.RootShell(
+                requireIdentifier(fields, "sessionId"), requireArgv(fields), requireShellTimeout(fields)
+            )
+            MobileOperation.UI_XML -> {
+                val source = fields["source"] as? String
+                    ?: invalid("source must be accessibility_xml or adb_uiautomator.")
+                if (source != "accessibility_xml" && source != "adb_uiautomator")
+                    invalid("source must be accessibility_xml or adb_uiautomator.")
+                val serial = optionalIdentifier(fields, "serial")
+                if (serial != null && source != "adb_uiautomator") invalid("serial is only valid for adb_uiautomator.")
+                MobileCommand.UiXml(requireIdentifier(fields, "sessionId"), source, serial)
+            }
         }
     }
 
@@ -190,6 +221,31 @@ internal object MobileProtocol {
         if (!value.isFinite() || value < 100.0 || value > 1000.0 || value % 1.0 != 0.0) {
             invalid("durationMs must be an integer from 100 to 1000.")
         }
+        return value.toLong()
+    }
+
+    private fun optionalIdentifier(fields: Map<String, Any?>, name: String): String? {
+        if (!fields.containsKey(name)) return null
+        return requireIdentifier(fields, name)
+    }
+
+    private fun requireArgv(fields: Map<String, Any?>): List<String> {
+        val value = fields["argv"] as? List<*> ?: invalid("argv must be an array of strings.")
+        if (value.isEmpty() || value.size > AndroidCapabilityManager.MAX_ARGV) invalid("argv must contain 1 to 32 strings.")
+        return value.map {
+            val item = it as? String ?: invalid("argv must contain only strings.")
+            if (item.isEmpty() || item.length > AndroidCapabilityManager.MAX_ARG_LENGTH ||
+                forbiddenShellCharacters.containsMatchIn(item))
+                invalid("argv contains an invalid argument.")
+            item
+        }
+    }
+
+    private fun requireShellTimeout(fields: Map<String, Any?>): Long {
+        if (!fields.containsKey("timeoutMs")) return 5_000L
+        val value = number(fields["timeoutMs"]) ?: invalid("timeoutMs must be an integer number.")
+        if (!value.isFinite() || value % 1.0 != 0.0 || value < AndroidCapabilityManager.MIN_TIMEOUT_MS ||
+            value > AndroidCapabilityManager.MAX_TIMEOUT_MS) invalid("timeoutMs must be an integer from 100 to 15000.")
         return value.toLong()
     }
 
