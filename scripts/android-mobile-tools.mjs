@@ -379,6 +379,25 @@ function xmlTokenSafe(value) {
   }
   return quote === null && xmlSafeText(value);
 }
+function xmlElementTokenSafe(value, closing) {
+  if (closing) return /^<\/[A-Za-z_][A-Za-z0-9_.:-]*\s*>$/.test(value);
+  let body = value.slice(1, /\/\s*>$/.test(value) ? -2 : -1);
+  body = body.replace(/^[A-Za-z_][A-Za-z0-9_.:-]*/, "");
+  while (body.trim()) {
+    body = body.trimStart();
+    const name = body.match(/^[A-Za-z_][A-Za-z0-9_.:-]*/);
+    if (!name) return false;
+    body = body.slice(name[0].length).trimStart();
+    if (!body.startsWith("=")) return false;
+    body = body.slice(1).trimStart();
+    const quote = body[0];
+    if (quote !== "'" && quote !== '"') return false;
+    const end = body.indexOf(quote, 1);
+    if (end < 0 || !xmlSafeText(body.slice(1, end))) return false;
+    body = body.slice(end + 1);
+  }
+  return true;
+}
 /** Small, entity-safe XML well-formedness check without loading a DOM. */
 function parseXml(value) {
   const source = xmlText(value).trim();
@@ -402,6 +421,7 @@ function parseXml(value) {
     if (item.startsWith("<!--")) { check(!closed); cursor = token.lastIndex; continue; }
     if (item.startsWith("<!")) badResponse();
     const closing = /^<\//.test(item), selfClosing = /\/\s*>$/.test(item), name = item.match(/^<\/?([A-Za-z_][A-Za-z0-9_.:-]*)/)[1];
+    check(xmlElementTokenSafe(item, closing));
     if (closing) { check(stack.pop() === name); if (!stack.length) { check(root); closed = true; } }
     else { check(!closed); if (!root) root = true; stack.push(name); if (name.toLowerCase() === "node") nodes++; if (selfClosing) { stack.pop(); if (!stack.length) closed = true; } }
     cursor = token.lastIndex;

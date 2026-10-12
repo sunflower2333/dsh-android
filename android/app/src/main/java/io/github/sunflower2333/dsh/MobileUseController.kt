@@ -138,7 +138,8 @@ object MobileUseController {
                 // manager may select a configured default when serial is omitted;
                 // never expose that value through an untrusted command error.
                 if (result.optBoolean("ok")) {
-                    result.optJSONObject("value")?.put("target", command.serial ?: JSONObject.NULL)
+                    val configured = capabilities(context).status().let { if (it.isNull("adbTarget")) null else it.optString("adbTarget") }
+                    result.optJSONObject("value")?.put("target", command.serial ?: configured ?: JSONObject.NULL)
                 }
                 complete(result)
             }
@@ -151,8 +152,9 @@ object MobileUseController {
                     listOf("shell", "uiautomator", "dump", "/dev/tty")
                 )
                 if (result.optBoolean("ok")) {
+                    val configured = capabilities(context).status().let { if (it.isNull("adbTarget")) null else it.optString("adbTarget") }
                     result.optJSONObject("value")?.put("source", command.source)
-                        ?.put("target", command.serial ?: JSONObject.NULL)
+                        ?.put("target", command.serial ?: configured ?: JSONObject.NULL)
                 }
                 complete(result)
             } else {
