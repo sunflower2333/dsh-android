@@ -203,6 +203,30 @@ control listener or WebView JavaScript authorization method. APK staging adds
 the plugin to its isolated package copy; Termux retains its existing tool set.
 DSH's existing tool approval policy continues to apply.
 
+### ADB, Root Shell and UI XML
+
+The same **Mobile use** settings section also contains the optional ADB and
+Root Shell capabilities. A user must import an executable **ARM64** `adb`
+client through Android's file picker before enabling ADB. The imported file is
+copied into app-private storage; its source URI and any pairing credentials are
+not retained. USB devices and wireless targets use the serial reported by that
+ADB client. The target field stores only a bounded serial, and an empty field
+uses the client's default target.
+
+Both capabilities are disabled by default and each has its own explicit enable
+switch. `mobile_adb_status` only reports capability state. `mobile_adb_shell`
+accepts a bounded argument array and runs the selected ADB target without a
+shell string or inherited DSH token environment. `mobile_root_shell` is
+available only when the device exposes an executable `su`; it invokes `su -c`
+only after the user enables Root Shell. Disabling either capability cancels its
+active child process. A capability setting never grants Accessibility control.
+
+`mobile_ui_xml` explicitly selects one bounded XML source. `accessibility_xml`
+serializes the current foreground Accessibility tree, while `adb_uiautomator`
+uses the selected ADB target. Both sources cap depth, nodes, text and bytes;
+password fields are redacted and screen text remains untrusted data. The
+normal `mobile_observe` JSON and screenshot behavior are unchanged.
+
 The host integration checks use the real DSH tool runtime and an isolated
 socket fixture:
 
@@ -213,8 +237,14 @@ node scripts/test-android-sandbox.mjs /path/to/dsh-package
 node scripts/test-android-workspace.mjs /path/to/dsh-package
 ```
 
-The Android workflow runs these integration checks before compiling Node, then
-runs native JVM tests and Android lint before assembling and signing the APK.
+The Android workflow first runs the package-free source fixture check, then
+runs these package integration checks before compiling Node. It runs native
+JVM tests and Android lint before assembling and signing the APK. The cloud
+build host has no real ARM64 Android emulator, hardware acceleration or rooted
+Android device, so CI does not claim to validate USB/wireless ADB transport,
+`su`, Android WebView lifetime, or Accessibility behavior. Those require an
+ARM64 device or a separately provisioned software emulator; the host fixtures
+validate the protocol, bounds, redaction and stable error mapping only.
 
 The optional `scripts/test-support/nim-test-relay.py` and
 `verify-mobile-nim.py` are bounded test helpers for a separately configured

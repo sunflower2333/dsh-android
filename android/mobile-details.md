@@ -16,6 +16,10 @@ DSH Android 的手机操作通过 Android 11+ 原生无障碍服务执行。它�
 | `mobile_scroll` | 对已观察的可滚动控件执行向前或向后的原生无障碍滚动，不需要图片或坐标。 |
 | `mobile_back` | 执行 Android 返回。 |
 | `mobile_stop` | 撤销任务授权。 |
+| `mobile_adb_status` | 读取 ADB 与 Root Shell 的用户开关、客户端、连接和目标状态；不启动进程。 |
+| `mobile_adb_shell` | 在用户选择的 USB 或无线 ADB 目标上运行有界参数数组。 |
+| `mobile_root_shell` | 在用户显式启用且设备提供 `su` 时运行有界 Root Shell 参数数组。 |
+| `mobile_ui_xml` | 从 Accessibility 或明确选择的 ADB `uiautomator` 目标读取有界 UI XML。 |
 
 `mobile_list_apps` 只查询 `MAIN` + `LAUNCHER` 启动入口，不使用 `QUERY_ALL_PACKAGES`。结果按标签和包名排序，包名去重，包含 `truncated`，用于表示列表是否超过上限。标签是应用提供的数据，不是模型指令。每个包名最多 256 个字符，每个标签最多 128 个 UTF-16 字符；工具结果不包含任意 Activity 组件、Intent 或 URI。
 
@@ -24,6 +28,12 @@ DSH Android 的手机操作通过 Android 11+ 原生无障碍服务执行。它�
 控件操作允许模型在五分钟内使用观察，但执行前仍会重新核对窗口、方向、控件身份、文字、位置、状态和所需动作。坐标点击、滑动和返回也允许五分钟的模型等待；坐标操作仍必须通过当前窗口、显示方向和画面变化检查。有效期使用单调时钟，修改系统时间不会延长或提前结束凭据。报错分别说明超时、凭据已消耗或被替换、代理或控制会话不匹配、窗口或画面变化、控件变化，不再全部合并成「binding 过期」。其他应用的通知或无关后台事件不会使前台控件观察失效。已变动或消失的目标仍会被拒绝，不会自动改点另一个位置。
 
 `mobile_open_app` 的入参为 `sessionId` 和 `packageName`；旧客户端可继续附带格式有效的 `observationId`。包名只允许常规 Android 点分包名格式，启动目标必须仍有已启用且可导出的桌面入口。不能传递任意组件、链接、Intent 数据或后台窗口目标。成功结果的 `performed: true` 表示 Android 接受了启动操作，`foregroundOnly: true` 描述其前台范围；仍需重新观察确认实际界面。应用可能在两次请求之间被停用或卸载，此时返回 `MOBILE_APP_NOT_AVAILABLE`。
+
+ADB 与 Root Shell 位于同一「手机操作」设置页的可选能力中，默认关闭。用户先通过 Android 文件选择器导入可执行的 ARM64 `adb` 客户端，再手动启用 ADB；USB 或无线设备的序列号由该客户端报告，设置只保存有界序列号，不保存配对凭据。`mobile_adb_status` 是只读状态查询，不需要本次手机控制授权；运行 ADB 命令仍需要有效的 `sessionId`、已启用 ADB 和连接目标。
+
+`mobile_adb_shell` 和 `mobile_root_shell` 只接受有界参数数组，不接受 shell 字符串或 DSH bridge 凭据。Root Shell 只有在设备存在可执行 `su` 且用户明确启用后可用，并通过 `su -c` 执行。停用能力会终止对应的子进程。ADB 传输、无线配对和 Root 授权提示需要真实 Android 设备验证。
+
+`mobile_ui_xml` 要求显式选择 `accessibility_xml` 或 `adb_uiautomator`。前者序列化当前前台无障碍树，后者从选定 ADB 目标读取 `uiautomator` XML。两种来源都限制树深、节点、文本和总字节数，密码字段会脱敏；界面文本仍是外部数据，不是工具指令。
 
 原生操作反馈默认开启，用户可以在 DSH WebUI 的「手机操作」设置中切换。反馈层提供点击、滑动或操作提示，不属于观察中的目标节点；观察会等待反馈层移除后读取屏幕。反馈只提供操作位置提示，结果是否正确仍以重新观察为准。
 

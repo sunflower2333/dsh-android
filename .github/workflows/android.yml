@@ -41,6 +41,19 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: https://registry.npmjs.org
 
+      # These checks only read repository sources. Keep them before the real
+      # Termux/Bash/Node runtime builds so a malformed mobile contract fails
+      # quickly without manufacturing placeholder runtime assets.
+      - name: Verify Android mobile source fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check scripts/android-mobile-tools.mjs
+          node --check scripts/android-settings-ui.js
+          node --check scripts/patch-android-settings-ui.mjs
+          node --check scripts/test-android-mobile-fixtures.mjs
+          node scripts/test-android-mobile-fixtures.mjs
+
       - name: Set up Java
         uses: actions/setup-java@v5
         with:
