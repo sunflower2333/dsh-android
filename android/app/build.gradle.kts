@@ -78,4 +78,8 @@ tasks.configureEach {
 
 dependencies {
     testImplementation("junit:junit:4.13.2")
+    // The Android SDK's org.json classes are API stubs on the host JVM. Use
+    // the upstream implementation for capability-manager unit tests that
+    // exercise the JSON status/error contract.
+    testImplementation("org.json:json:20240303")
 }

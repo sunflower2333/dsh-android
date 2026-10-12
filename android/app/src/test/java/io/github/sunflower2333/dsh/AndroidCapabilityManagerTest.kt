@@ -102,14 +102,12 @@ class AndroidCapabilityManagerTest {
     private fun File.modeBits(): Int = (canonicalFile.let { it }
         .runCatching { java.nio.file.Files.getPosixFilePermissions(toPath()) }
         .getOrNull()
-        ?.sumOf { permission ->
-            when (permission.name) {
-                "OWNER_READ" -> 256
-                "OWNER_WRITE" -> 128
-                "OWNER_EXECUTE" -> 64
-                else -> 0
-            }
-        } ?: 0)
+        ?.fold(0) { total, permission -> total + when (permission.name) {
+            "OWNER_READ" -> 256
+            "OWNER_WRITE" -> 128
+            "OWNER_EXECUTE" -> 64
+            else -> 0
+        } } ?: 0)
 
     private class FakeProcess(
         private val exitCode: Int,
