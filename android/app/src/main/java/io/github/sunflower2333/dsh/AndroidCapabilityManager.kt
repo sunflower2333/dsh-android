@@ -22,10 +22,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AndroidCapabilityManager(
     context: Context? = null,
     private val processFactory: ProcessFactory = DefaultProcessFactory,
-    private val clock: Clock = MonotonicClock,
     private val adbExecutable: File? = null,
     private val rootCommand: String? = null,
     private val storageDirectory: File? = null,
+    private val clock: Clock = MonotonicClock,
 ) {
     fun interface ProcessFactory {
         fun start(command: List<String>, environment: Map<String, String>): Process
