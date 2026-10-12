@@ -235,6 +235,9 @@ test("ADB/root/UI XML tools enforce bounded argv, source/target identity, redact
   assert.equal(shell.isError, false, JSON.stringify(shell.error));
   assert.deepEqual(shell.value, { exitCode: 0, stdout: "fixture-output", stderr: "", truncated: false, target: "usb-1" });
   assert.deepEqual(r.native.calls.at(-1).args, { sessionId: SESSION, serial: "usb-1", argv: ["shell", "getprop"], timeoutMs: 1000 });
+  const omitted = await r.execute("mobile_adb_shell", { sessionId: SESSION, serial: null, argv: ["shell", "getprop"] });
+  assert.equal(omitted.isError, false, JSON.stringify(omitted.error));
+  assert.deepEqual(r.native.calls.at(-1).args, { sessionId: SESSION, argv: ["shell", "getprop"] });
   const root = await r.execute("mobile_root_shell", { sessionId: SESSION, argv: ["id"] });
   assert.equal(root.isError, false); assert.equal(root.value.stdout, "fixture-output");
   const accessibility = await r.execute("mobile_ui_xml", { sessionId: SESSION, source: "accessibility_xml" });
@@ -242,6 +245,9 @@ test("ADB/root/UI XML tools enforce bounded argv, source/target identity, redact
   assert.match(accessibility.value.xml, /\[REDACTED\]/); assert.ok(!accessibility.value.xml.includes("fixture-secret"));
   const adbXml = await r.execute("mobile_ui_xml", { sessionId: SESSION, source: "adb_uiautomator", serial: "usb-1" });
   assert.equal(adbXml.isError, false, JSON.stringify(adbXml.error)); assert.equal(adbXml.value.target, "usb-1"); assert.equal(adbXml.value.nodes, 1);
+  const adbXmlDefault = await r.execute("mobile_ui_xml", { sessionId: SESSION, source: "adb_uiautomator", serial: null });
+  assert.equal(adbXmlDefault.isError, false, JSON.stringify(adbXmlDefault.error));
+  assert.deepEqual(r.native.calls.at(-1).args, { sessionId: SESSION, source: "adb_uiautomator" });
   const calls = r.native.calls.length;
   for (const args of [
     { sessionId: SESSION, argv: [] }, { sessionId: SESSION, argv: ["shell", "echo;id"] },

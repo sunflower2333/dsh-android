@@ -333,7 +333,7 @@ function argvRequest(args, root = false) {
   const allowed = root ? ["sessionId", "argv", "timeoutMs"] : ["sessionId", "serial", "argv", "timeoutMs"];
   if (Object.keys(args).some(key => !allowed.includes(key)) || !id(args.sessionId) || !validArgv(args.argv) ||
     !validSerial(args.serial) || !validateTimeout(args.timeoutMs)) fail("invalid_request", "Shell arguments are invalid or exceed the bounded limits.");
-  return { sessionId: args.sessionId, ...(root || args.serial === undefined ? {} : { serial: args.serial }), argv: args.argv,
+  return { sessionId: args.sessionId, ...(root || args.serial == null ? {} : { serial: args.serial }), argv: args.argv,
     ...(args.timeoutMs === undefined ? {} : { timeoutMs: args.timeoutMs }) };
 }
 function capabilityStatusValue(value) {
@@ -529,7 +529,7 @@ export function apply(ctx) {
             if (!id(args.sessionId)) fail("invalid_request", "Invalid task ID.");
             if (action === "adb_shell") {
               const input = argvRequest(args);
-              return shellValue(await request(action, input, signal), args.serial);
+              return shellValue(await request(action, input, signal), args.serial == null ? undefined : args.serial);
             }
             if (action === "root_shell") {
               const input = argvRequest(args, true);
@@ -542,9 +542,9 @@ export function apply(ctx) {
                 fail("invalid_request", "UI XML requires a valid source and optional serial only for adb_uiautomator.");
               }
               const input = { sessionId: args.sessionId, source: args.source,
-                ...(args.serial === undefined ? {} : { serial: args.serial }) };
+                ...(args.serial == null ? {} : { serial: args.serial }) };
               const native = await request(action, input, signal);
-              return args.source === "accessibility_xml" ? accessibilityXmlValue(native, args.sessionId) : adbXmlValue(native, args.sessionId, args.serial);
+              return args.source === "accessibility_xml" ? accessibilityXmlValue(native, args.sessionId) : adbXmlValue(native, args.sessionId, args.serial == null ? undefined : args.serial);
             }
             if (action === "list_apps") {
               if (Object.keys(args).some(key => key !== "sessionId")) fail("invalid_request", "List apps accepts only a current task ID.");
