@@ -42,14 +42,15 @@ class AndroidCapabilityManagerTest {
 
     @Test fun rootUsesOnlySuDashCAndRejectsShellQuotingBreakout() {
         val command = AtomicReference<List<String>?>(null)
-        val manager = manager(rootCommand = "/testing/su") { argv, _ ->
+        val su = executableFile()
+        val manager = manager(rootCommand = su.absolutePath) { argv, _ ->
             command.set(argv)
             FakeProcess(exitCode = 0)
         }
         assertTrue(manager.setRootEnabled(true).getBoolean("rootEnabled"))
         val result = manager.executeRoot("session", listOf("id", "-u"))
         assertTrue(result.getBoolean("ok"))
-        assertEquals(listOf("/testing/su", "-c", "'id' '-u'"), command.get())
+        assertEquals(listOf(su.absolutePath, "-c", "'id' '-u'"), command.get())
         assertEquals("INVALID_ARGV", manager.executeRoot("session", listOf("id' ; touch /tmp/pwn")).errorCode())
     }
 

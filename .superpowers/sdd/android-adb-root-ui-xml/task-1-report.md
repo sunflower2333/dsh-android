@@ -35,3 +35,9 @@ and arm64 native libraries), which are absent in this checkout.
 Gradle unit tests need to be rerun in an environment with the Android/Kotlin
 dependencies and generated runtime assets available. Real ADB, USB/wireless
 pairing, and root authorization remain device-level checks.
+
+Follow-up hardening before handoff verifies that root availability only reports
+an executable injected command or an executable `su` found on PATH, non-zero
+child exits return only stable metadata (without raw command output), and the
+clock is injectable for deterministic JVM tests. `status()` has no unused
+context parameter.

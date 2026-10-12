@@ -22,12 +22,19 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AndroidCapabilityManager(
     context: Context? = null,
     private val processFactory: ProcessFactory = DefaultProcessFactory,
+    private val clock: Clock = MonotonicClock,
     private val adbExecutable: File? = null,
     private val rootCommand: String? = null,
     private val storageDirectory: File? = null,
 ) {
     fun interface ProcessFactory {
         fun start(command: List<String>, environment: Map<String, String>): Process
+    }
+
+    fun interface Clock { fun nowMs(): Long }
+
+    object MonotonicClock : Clock {
+        override fun nowMs(): Long = SystemClock.elapsedRealtime()
     }
 
     object DefaultProcessFactory : ProcessFactory {
@@ -75,7 +82,7 @@ class AndroidCapabilityManager(
     @Volatile private var rootAvailableState: Boolean = resolveRoot() != null
 
     /** A status object contains only the public, non-secret capability fields. */
-    fun status(context: Context? = appContext): JSONObject = JSONObject()
+    fun status(): JSONObject = JSONObject()
         .put("adbConfigured", adbFile.isFile && adbFile.canRead())
         .put("adbEnabled", adbEnabledState.get())
         .put("adbConnected", adbConnectedState && adbEnabledState.get() && adbFile.isFile)
@@ -208,13 +215,13 @@ class AndroidCapabilityManager(
             Thread { stderr.read(process.errorStream) },
         )
         outputThreads.forEach { it.start() }
-        val deadline = SystemClock.elapsedRealtime() + timeoutMs
+        val deadline = clock.nowMs() + timeoutMs
         var timedOut = false
         var overflow = false
         try {
             while (process.isAlive) {
                 if (stdout.overflow.get() || stderr.overflow.get()) { overflow = true; break }
-                if (SystemClock.elapsedRealtime() >= deadline) { timedOut = true; break }
+                if (clock.nowMs() >= deadline) { timedOut = true; break }
                 Thread.sleep(10)
             }
             if (timedOut || overflow) process.destroyForcibly()
@@ -230,8 +237,7 @@ class AndroidCapabilityManager(
                 .put("truncated", stdout.truncated || stderr.truncated)
             return if (exit == 0) JSONObject().put("ok", true).put("value", result)
             else JSONObject().put("ok", false).put("error", JSONObject().put("code", "PROCESS_EXIT")
-                .put("exitCode", exit).put("stdout", stdout.text()).put("stderr", stderr.text())
-                .put("truncated", stdout.truncated || stderr.truncated))
+                .put("exitCode", exit).put("truncated", stdout.truncated || stderr.truncated))
         } finally {
             synchronized(activeLock) { active.remove(process) }
             outputThreads.forEach { thread -> if (thread.isAlive) thread.interrupt() }
@@ -247,10 +253,13 @@ class AndroidCapabilityManager(
     }
 
     private fun resolveRoot(): String? {
-        rootCommand?.let { return it.takeIf { value -> value.isNotBlank() } }
-        return listOf("/system/bin/su", "/system/xbin/su", "su").firstOrNull { candidate ->
-            candidate == "su" || File(candidate).canExecute()
+        rootCommand?.let { configured ->
+            return configured.takeIf { value -> value.isNotBlank() && File(value).canExecute() }
         }
+        val path = System.getenv("PATH").orEmpty().split(File.pathSeparatorChar)
+        return (listOf("/system/bin/su", "/system/xbin/su") +
+            path.filter { it.isNotBlank() }.map { File(it, "su").absolutePath })
+            .firstOrNull { File(it).canExecute() }
     }
 
     private fun cleanEnvironment(source: Map<String, String>): Map<String, String> = source.filterKeys { key ->
