@@ -317,9 +317,16 @@ const rootShellSchema = obj({ exitCode: N(), stdout: S(false), stderr: S(false),
 const xmlSchema = obj({ sessionId: S(), source: { type: "string", enum: ["accessibility_xml", "adb_uiautomator"], required: true },
   observationId: S(false), windowId: N(false), packageName: { oneOf: [{ type: "string" }, { type: "null" }] },
   xml: S(), truncated: B, nodes: N(), target: nullableString });
-const argvSchema = { type: "array", minItems: 1, maxItems: LIMITS.argv, items: { type: "string", minLength: 1, maxLength: LIMITS.argLength }, required: true };
-const serialSchema = { oneOf: [{ type: "string", minLength: 1, maxLength: 128 }, { type: "null" }] };
-const timeoutSchema = { type: "number", minimum: 100, maximum: 15000, description: "Integer timeout in milliseconds; default 5000." };
+// Array size and argument length are enforced by validArgv() at execution
+// time; the DSH schema DSL does not support JSON Schema min/max item or
+// string-length keywords.
+const argvSchema = { type: "array", items: { type: "string" }, required: true };
+// The DSH tool schema DSL intentionally has a smaller vocabulary than JSON
+// Schema and rejects minLength/maxLength inside oneOf branches. Keep the
+// nullable wire shape here; validSerial() applies the strict bounded serial
+// policy before any native request is dispatched.
+const serialSchema = { oneOf: [{ type: "string" }, { type: "null" }] };
+const timeoutSchema = { type: "number", description: "Integer timeout in milliseconds; default 5000 (bounded to 100..15000)." };
 
 const SAFE_SERIAL = /^[A-Za-z0-9._:-]{1,128}$/;
 const FORBIDDEN_ARG = /[;&|$`()<>\"'\\\u0000-\r\n]/;
