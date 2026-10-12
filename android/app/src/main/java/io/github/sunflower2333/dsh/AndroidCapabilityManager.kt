@@ -2,7 +2,6 @@ package io.github.sunflower2333.dsh
 
 import android.content.Context
 import android.net.Uri
-import android.os.SystemClock
 import android.system.Os
 import org.json.JSONArray
 import org.json.JSONObject
@@ -34,7 +33,9 @@ class AndroidCapabilityManager(
     fun interface Clock { fun nowMs(): Long }
 
     object MonotonicClock : Clock {
-        override fun nowMs(): Long = SystemClock.elapsedRealtime()
+        // System.nanoTime is monotonic and available in plain JVM tests as
+        // well as Android; no Android clock shim is needed here.
+        override fun nowMs(): Long = System.nanoTime() / 1_000_000L
     }
 
     object DefaultProcessFactory : ProcessFactory {

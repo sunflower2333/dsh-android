@@ -41,3 +41,7 @@ an executable injected command or an executable `su` found on PATH, non-zero
 child exits return only stable metadata (without raw command output), and the
 clock is injectable for deterministic JVM tests. `status()` has no unused
 context parameter.
+
+The production default clock now uses pure-Java `System.nanoTime()` converted
+to milliseconds, so capability-manager tests do not depend on Android clock
+stubs. A `Clock` injection point remains available for deterministic tests.
