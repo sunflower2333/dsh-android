@@ -9,6 +9,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 internal sealed interface RootShellResult {
@@ -43,6 +44,7 @@ internal class LibsuRootShellRunner(
     }
     private val activeShells = ConcurrentHashMap.newKeySet<Shell>()
     private val activeWorkers = ConcurrentHashMap.newKeySet<Future<*>>()
+    private val activeCancellations = ConcurrentHashMap.newKeySet<AtomicBoolean>()
     private val cancellationLock = Any()
     private val cancellationGeneration = AtomicLong(0L)
 
@@ -54,11 +56,12 @@ internal class LibsuRootShellRunner(
         expectedGeneration: Long,
     ): RootShellResult {
         val future: Future<RootShellResult>
+        val cancellation = AtomicBoolean(false)
         synchronized(cancellationLock) {
-            if (!isCurrent(expectedGeneration)) return RootShellResult.Failed("ROOT_DISABLED")
+            if (!isCurrent(expectedGeneration, cancellation)) return RootShellResult.Failed("ROOT_DISABLED")
             future = try {
                 workers.submit<RootShellResult> {
-                    runCommand(commandText, timeoutMs, expectedGeneration)
+                    runCommand(commandText, timeoutMs, expectedGeneration, cancellation)
                 }
             } catch (_: Throwable) {
                 return RootShellResult.Failed("ROOT_UNAVAILABLE")
@@ -66,47 +69,53 @@ internal class LibsuRootShellRunner(
             // Register the worker while holding the same lock used to advance
             // the generation. This closes the submit/cancel window.
             activeWorkers += future
+            activeCancellations += cancellation
         }
 
         return try {
             future.get(timeoutMs, TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
+            cancellation.set(true)
             future.cancel(true)
             closeActiveShells()
             RootShellResult.Failed("TIMEOUT")
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
+            cancellation.set(true)
             future.cancel(true)
             closeActiveShells()
             RootShellResult.Failed("TIMEOUT")
         } catch (_: CancellationException) {
-            if (!isCurrent(expectedGeneration)) RootShellResult.Failed("ROOT_DISABLED")
+            if (!isCurrent(expectedGeneration, cancellation)) RootShellResult.Failed("ROOT_DISABLED")
             else RootShellResult.Failed("ROOT_UNAVAILABLE")
         } catch (_: Throwable) {
             RootShellResult.Failed("ROOT_UNAVAILABLE")
         } finally {
             activeWorkers.remove(future)
+            activeCancellations.remove(cancellation)
         }
     }
 
     override fun cancelAll() {
-        val workersToCancel = synchronized(cancellationLock) {
+        val (workersToCancel, cancellationsToApply) = synchronized(cancellationLock) {
             cancellationGeneration.incrementAndGet()
-            activeWorkers.toList()
+            activeWorkers.toList() to activeCancellations.toList()
         }
+        cancellationsToApply.forEach { it.set(true) }
         workersToCancel.forEach { it.cancel(true) }
         closeActiveShells()
     }
 
-    private fun isCurrent(expectedGeneration: Long): Boolean =
-        cancellationGeneration.get() == expectedGeneration
+    private fun isCurrent(expectedGeneration: Long, cancellation: AtomicBoolean): Boolean =
+        !cancellation.get() && cancellationGeneration.get() == expectedGeneration
 
     private fun runCommand(
         commandText: String,
         timeoutMs: Long,
         expectedGeneration: Long,
+        cancellation: AtomicBoolean,
     ): RootShellResult {
-        if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+        if (!isCurrent(expectedGeneration, cancellation) || Thread.currentThread().isInterrupted) {
             return RootShellResult.Failed("ROOT_DISABLED")
         }
         var shell: Shell? = null
@@ -118,27 +127,27 @@ internal class LibsuRootShellRunner(
                 .build()
             // Revocation can happen while libsu is resolving the root shell.
             // Never register or execute a shell from an obsolete generation.
-            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+            if (!isCurrent(expectedGeneration, cancellation) || Thread.currentThread().isInterrupted) {
                 runCatching { current.close() }
                 return RootShellResult.Failed("ROOT_DISABLED")
             }
             shell = current
             activeShells += current
-            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+            if (!isCurrent(expectedGeneration, cancellation) || Thread.currentThread().isInterrupted) {
                 return RootShellResult.Failed("ROOT_DISABLED")
             }
             if (!current.isRoot) return RootShellResult.Failed("ROOT_UNAVAILABLE")
 
             val stdout = BoundedLines()
             val stderr = BoundedLines()
-            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+            if (!isCurrent(expectedGeneration, cancellation) || Thread.currentThread().isInterrupted) {
                 return RootShellResult.Failed("ROOT_DISABLED")
             }
             val result = current.newJob()
                 .add(commandText)
                 .to(stdout, stderr)
                 .exec()
-            if (!isCurrent(expectedGeneration)) return RootShellResult.Failed("ROOT_DISABLED")
+            if (!isCurrent(expectedGeneration, cancellation)) return RootShellResult.Failed("ROOT_DISABLED")
             if (stdout.truncated || stderr.truncated) {
                 return RootShellResult.Failed("OUTPUT_LIMIT")
             }
@@ -149,7 +158,7 @@ internal class LibsuRootShellRunner(
                 truncated = false,
             )
         } catch (_: Throwable) {
-            return if (!isCurrent(expectedGeneration)) RootShellResult.Failed("ROOT_DISABLED")
+            return if (!isCurrent(expectedGeneration, cancellation)) RootShellResult.Failed("ROOT_DISABLED")
             else RootShellResult.Failed("ROOT_UNAVAILABLE")
         } finally {
             shell?.let {
