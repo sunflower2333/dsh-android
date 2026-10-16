@@ -54,6 +54,26 @@ class AndroidCapabilityManagerTest {
         assertEquals("INVALID_ARGV", manager.executeRoot("session", listOf("id' ; touch /tmp/pwn")).errorCode())
     }
 
+    @Test fun rootDelegatesToConfiguredRootBackend() {
+        val command = AtomicReference<Pair<String, Long>?>(null)
+        val runner = RootShellRunner { text, timeoutMs ->
+            command.set(text to timeoutMs)
+            RootShellResult.Completed(0, "uid=0(root)", "", false)
+        }
+        val manager = manager(
+            rootCommand = executableFile().absolutePath,
+            rootShellRunner = runner,
+        )
+
+        assertTrue(manager.setRootEnabled(true).getBoolean("rootEnabled"))
+        val result = manager.executeRoot("session", listOf("id", "-u"), timeoutMs = 900)
+
+        assertTrue(result.getBoolean("ok"))
+        assertEquals("'id' '-u'", command.get()?.first)
+        assertEquals(900L, command.get()?.second)
+        assertEquals("uid=0(root)", result.getJSONObject("value").getString("stdout"))
+    }
+
     @Test fun timeoutForceKillsChildAndReturnsStableError() {
         val child = FakeProcess(exitCode = 0, remainsAlive = true)
         val manager = manager { _, _ -> child }
@@ -80,17 +100,20 @@ class AndroidCapabilityManagerTest {
 
     private fun manager(
         rootCommand: String? = null,
+        rootShellRunner: RootShellRunner? = null,
         factory: AndroidCapabilityManager.ProcessFactory = AndroidCapabilityManager.ProcessFactory { _, _ -> FakeProcess(0) },
     ) = AndroidCapabilityManager(
         processFactory = factory,
         adbExecutable = executableFile(),
         rootCommand = rootCommand,
+        rootShellRunner = rootShellRunner,
     )
 
     private fun manager(
         rootCommand: String? = null,
+        rootShellRunner: RootShellRunner? = null,
         factory: (List<String>, Map<String, String>) -> Process,
-    ) = manager(rootCommand, AndroidCapabilityManager.ProcessFactory(factory))
+    ) = manager(rootCommand, rootShellRunner, AndroidCapabilityManager.ProcessFactory(factory))
 
     private fun executableFile(): File = createTempFile(prefix = "adb", suffix = ".bin").also {
         it.setExecutable(true)

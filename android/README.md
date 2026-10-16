@@ -217,9 +217,11 @@ Both capabilities are disabled by default and each has its own explicit enable
 switch. `mobile_adb_status` only reports capability state. `mobile_adb_shell`
 accepts a bounded argument array and runs the selected ADB target without a
 shell string or inherited DSH token environment. `mobile_root_shell` is
-available only when the device exposes an executable `su`; it invokes `su -c`
-only after the user enables Root Shell. Disabling either capability cancels its
-active child process. A capability setting never grants Accessibility control.
+available only when the device exposes an executable `su`; after the user
+enables Root Shell, DSH creates an isolated root shell through `libsu` 6.0.0.
+`libsu` delegates authorization to the installed root manager, including
+Magisk and KernelSU. Disabling either capability cancels its active child
+process. A capability setting never grants Accessibility control.
 
 `mobile_ui_xml` explicitly selects one bounded XML source. `accessibility_xml`
 serializes the current foreground Accessibility tree, while `adb_uiautomator`
@@ -296,6 +298,7 @@ are rebound after APK updates. DSH's Bash executor runs GNU Bash rather than
 Android's system shell. Bash's license and source information are bundled.
 Node's complete third-party license notices and the NDK libc++ notices are
 included in APK assets alongside the upstream icon license.
+The Android root-shell integration uses the Apache-2.0 `libsu` core library.
 No startup pass walks or chmods the JavaScript dependency tree; executable
 permissions are checked on the package-manager-installed native commands.
 Android staging omits optional JavaScript source maps, Windows debug symbols

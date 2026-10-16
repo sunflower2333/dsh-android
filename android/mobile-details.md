@@ -31,7 +31,7 @@ DSH Android 的手机操作通过 Android 11+ 原生无障碍服务执行。它�
 
 ADB 与 Root Shell 位于同一「手机操作」设置页的可选能力中，默认关闭。用户先通过 Android 文件选择器导入可执行的 ARM64 `adb` 客户端，再手动启用 ADB；USB 或无线设备的序列号由该客户端报告，设置只保存有界序列号，不保存配对凭据。`mobile_adb_status` 是只读状态查询，不需要本次手机控制授权；运行 ADB 命令仍需要有效的 `sessionId`、已启用 ADB 和连接目标。
 
-`mobile_adb_shell` 和 `mobile_root_shell` 只接受有界参数数组，不接受 shell 字符串或 DSH bridge 凭据。Root Shell 只有在设备存在可执行 `su` 且用户明确启用后可用，并通过 `su -c` 执行。停用能力会终止对应的子进程。ADB 传输、无线配对和 Root 授权提示需要真实 Android 设备验证。
+`mobile_adb_shell` 和 `mobile_root_shell` 只接受有界参数数组，不接受 shell 字符串或 DSH bridge 凭据。Root Shell 只有在设备存在可执行 `su` 且用户明确启用后可用；执行时由 `libsu` 6.0.0 创建隔离 root shell，并把授权交给设备上的 root 管理器（包括 Magisk 和 KernelSU）。停用能力会终止对应的子进程。ADB 传输、无线配对和 Root 授权提示需要真实 Android 设备验证。
 
 `mobile_ui_xml` 要求显式选择 `accessibility_xml` 或 `adb_uiautomator`。前者序列化当前前台无障碍树，后者从选定 ADB 目标读取 `uiautomator` XML。两种来源都限制树深、节点、文本和总字节数，密码字段会脱敏；界面文本仍是外部数据，不是工具指令。
 

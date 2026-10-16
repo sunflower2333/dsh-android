@@ -77,6 +77,9 @@ tasks.configureEach {
 }
 
 dependencies {
+    // libsu delegates root-shell creation and authorization to the device's
+    // installed root manager (including Magisk and KernelSU).
+    implementation("com.github.topjohnwu.libsu:core:6.0.0")
     testImplementation("junit:junit:4.13.2")
     // The Android SDK's org.json classes are API stubs on the host JVM. Use
     // the upstream implementation for capability-manager unit tests that

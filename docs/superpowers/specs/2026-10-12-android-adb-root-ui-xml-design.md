@@ -20,7 +20,7 @@ The Web settings patch adds a security section with separate ADB and root contro
 
 - `adb_status` reports capability state.
 - `adb_shell` accepts a session ID, optional target serial, an argv array, and a bounded timeout.
-- `root_shell` accepts a session ID, an argv array, and a bounded timeout; the native implementation invokes `su -c` only after root is enabled.
+- `root_shell` accepts a session ID, an argv array, and a bounded timeout; the native implementation creates an isolated `libsu` root shell only after root is enabled. `libsu` delegates authorization to the installed `su` manager, including Magisk and KernelSU.
 - `ui_xml` accepts a session ID and an explicit source (`accessibility_xml` or `adb_uiautomator`).
 
 All subprocesses use `ProcessBuilder` argument arrays, a cleaned environment without DSH bearer variables, a maximum runtime, and independent stdout/stderr limits. Timeout handling destroys the process and reports a stable error code. Command strings, credentials, and arbitrary native exception text never appear in tool responses or settings status.

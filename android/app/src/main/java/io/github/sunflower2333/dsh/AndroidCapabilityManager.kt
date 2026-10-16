@@ -18,13 +18,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  * deliberately has no knowledge of the mobile bridge or a shell session: the
  * bridge supplies a session id and remains responsible for authorisation.
  */
-class AndroidCapabilityManager(
+class AndroidCapabilityManager internal constructor(
     context: Context? = null,
     private val processFactory: ProcessFactory = DefaultProcessFactory,
     private val adbExecutable: File? = null,
     private val rootCommand: String? = null,
     private val storageDirectory: File? = null,
     private val clock: Clock = MonotonicClock,
+    rootShellRunner: RootShellRunner? = null,
 ) {
     fun interface ProcessFactory {
         fun start(command: List<String>, environment: Map<String, String>): Process
@@ -52,20 +53,23 @@ class AndroidCapabilityManager(
         const val MAX_TIMEOUT_MS = 15_000L
         const val MAX_ARGV = 32
         const val MAX_ARG_LENGTH = 4_096
-        const val MAX_OUTPUT_BYTES = 64 * 1024
+        internal const val MAX_OUTPUT_BYTES = 64 * 1024
         private const val ADB = "adb"
         private const val ROOT = "root"
 
         private val serialPattern = Regex("[A-Za-z0-9._:-]{1,128}")
-        // Root is passed through `su -c`, so reject characters that could
-        // terminate or extend the single-quoted argument.  A single quote is
-        // especially important here because it cannot be escaped inside a
-        // POSIX single-quoted string without ending that string.
+        // Root arguments are sent through a shell command line (libsu on
+        // Android, or `su -c` in the injected compatibility backend), so
+        // reject characters that could terminate or extend a quoted argument.
+        // A single quote is especially important because it cannot be escaped
+        // inside a POSIX single-quoted string without ending that string.
         private val forbiddenShellCharacters = Regex("[;&|$`()<>\\'\\\\\\u0000-\\r\\n]")
         private val dshSecretName = Regex("(?i)^DSH_.*(TOKEN|BEARER|CREDENTIAL|SECRET).*$")
     }
 
     private val appContext = context?.applicationContext ?: context
+    private val rootBackend: RootShellRunner? = rootShellRunner ?:
+        if (appContext != null && rootCommand == null) LibsuRootShellRunner(appContext) else null
     private val root = storageDirectory ?: appContext?.filesDir ?:
         File(System.getProperty("java.io.tmpdir") ?: ".", "dsh-capabilities")
     private val adbFile: File get() = adbExecutable ?: File(root, "tools/adb")
@@ -183,13 +187,16 @@ class AndroidCapabilityManager(
         val argsError = validateArgv(argv)
         if (argsError != null) return error(argsError)
         if (!validTimeout(timeoutMs)) return error("INVALID_TIMEOUT")
-        // su -c takes one command string.  Every argument has already been
-        // checked for shell metacharacters; quote spaces for the child shell.
+        // The root backend receives one command string. Every argument has
+        // already been checked for shell metacharacters; quote spaces for the
+        // child shell.
         val commandText = argv.joinToString(" ") { "'$it'" }
+        rootBackend?.let { return rootResult(it.execute(commandText, timeoutMs)) }
         return execute(ROOT, listOf(su, "-c", commandText), sessionId, timeoutMs)
     }
 
     fun cancelAll() {
+        rootBackend?.cancelAll()
         synchronized(activeLock) {
             active.toList().forEach { process ->
                 runCatching { process.destroyForcibly() }
@@ -253,6 +260,22 @@ class AndroidCapabilityManager(
         // closed and also handles a process between command construction and
         // registration.
         cancelAll()
+    }
+
+    private fun rootResult(result: RootShellResult): JSONObject = when (result) {
+        is RootShellResult.Failed -> error(result.code)
+        is RootShellResult.Completed -> {
+            val value = JSONObject()
+                .put("exitCode", result.exitCode)
+                .put("stdout", result.stdout)
+                .put("stderr", result.stderr)
+                .put("truncated", result.truncated)
+            if (result.exitCode == 0) JSONObject().put("ok", true).put("value", value)
+            else JSONObject().put("ok", false).put("error", JSONObject()
+                .put("code", "PROCESS_EXIT")
+                .put("exitCode", result.exitCode)
+                .put("truncated", result.truncated))
+        }
     }
 
     private fun resolveRoot(): String? {

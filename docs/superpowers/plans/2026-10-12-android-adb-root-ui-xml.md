@@ -4,7 +4,7 @@
 
 **Goal:** Add explicit Android ADB/root-shell capabilities and bounded UI XML observations to DSH Mobile use, with settings controls, host/native tests, and CI coverage.
 
-**Architecture:** A new native capability manager owns imported ADB execution, `su -c` execution, process limits, and capability state. The existing authenticated mobile bridge exposes those operations and serializes the local accessibility tree as XML; the Android-only JS plugin validates and exposes the operations. Settings uses the existing user-gesture web-message port and a file picker for the user-provided ADB client.
+**Architecture:** A new native capability manager owns imported ADB execution, `libsu` root-shell execution, process limits, and capability state. The existing authenticated mobile bridge exposes those operations and serializes the local accessibility tree as XML; the Android-only JS plugin validates and exposes the operations. Settings uses the existing user-gesture web-message port and a file picker for the user-provided ADB client.
 
 **Tech Stack:** Kotlin Android API 30+, Android WebView/WebMessage, `ProcessBuilder`, `AccessibilityNodeInfo`, JavaScript ESM plugin patching, Node `node:test`, Gradle/JVM tests.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - ADB is opt-in and uses a user-provided ARM64 client for USB or wireless targets.
-- ROOT shell is opt-in and invokes only `su -c`; it never silently falls back to another capability.
+- ROOT shell is opt-in and invokes only an isolated `libsu` root shell; it never silently falls back to another capability. `libsu` delegates authorization to the installed `su` manager, including Magisk and KernelSU.
 - All subprocesses use argv arrays, clear DSH bearer variables, enforce time/output limits, and return redacted stable errors.
 - UI XML is explicit, bounded, and password-redacted; default `mobile_observe` behavior remains unchanged.
 - Existing Mobile session/grant, lifecycle, same-UID bridge authentication, and serial queue rules remain authoritative.
@@ -39,7 +39,7 @@
 - Produces `setAdbEnabled`, `setRootEnabled`, `importAdb(uri)`, `executeAdb(sessionId, serial, argv, timeoutMs)`, `executeRoot(sessionId, argv, timeoutMs)`, `cancelAll`, and `serializeXml` entry points used by later tasks.
 - `executeAdb` and `executeRoot` return bounded `{ok,value|error}` JSON with exit code, stdout, stderr, and `truncated` fields; they never return arbitrary exception text.
 
-- [ ] **Step 1: Write failing tests** for disabled capability rejection, argv/serial validation, root `su -c` construction, output limits, timeout cancellation, DSH environment removal, status sanitization, and capability revocation cancelling a child.
+- [ ] **Step 1: Write failing tests** for disabled capability rejection, argv/serial validation, root-backend command construction, output limits, timeout cancellation, DSH environment removal, status sanitization, and capability revocation cancelling a child.
 - [ ] **Step 2: Run `./gradle ... :app:testDebugUnitTest --tests '*AndroidCapabilityManagerTest'`** with the direct Gradle 8.9 binary; verify the new tests fail for missing types/behavior.
 - [ ] **Step 3: Implement the manager** with app-private `files/tools/adb` import, restrictive file mode, `ProcessBuilder` argv execution, bounded stream readers, monotonic timeout, `destroyForcibly`, and explicit state gates.
 - [ ] **Step 4: Run the focused tests** and verify all capability-manager assertions pass.
