@@ -3,10 +3,13 @@ package io.github.sunflower2333.dsh
 import android.content.Context
 import com.topjohnwu.superuser.Shell
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicLong
 
 internal sealed interface RootShellResult {
     data class Completed(
@@ -20,7 +23,9 @@ internal sealed interface RootShellResult {
 }
 
 internal fun interface RootShellRunner {
-    fun execute(commandText: String, timeoutMs: Long): RootShellResult
+    fun execute(commandText: String, timeoutMs: Long, cancellationGeneration: Long): RootShellResult
+
+    fun currentCancellationGeneration(): Long = 0L
 
     fun cancelAll() = Unit
 }
@@ -37,47 +42,30 @@ internal class LibsuRootShellRunner(
         Thread(runnable, "dsh-root-shell").apply { isDaemon = true }
     }
     private val activeShells = ConcurrentHashMap.newKeySet<Shell>()
+    private val activeWorkers = ConcurrentHashMap.newKeySet<Future<*>>()
+    private val cancellationLock = Any()
+    private val cancellationGeneration = AtomicLong(0L)
 
-    override fun execute(commandText: String, timeoutMs: Long): RootShellResult {
-        val future = workers.submit<RootShellResult> {
-            var shell: Shell? = null
-            try {
-                val startupSeconds = ((timeoutMs + 999L) / 1_000L).coerceAtLeast(1L)
-                val current = Shell.Builder.create()
-                    .setContext(context)
-                    .setTimeout(startupSeconds)
-                    .build()
-                if (Thread.currentThread().isInterrupted) {
-                    runCatching { current.close() }
-                    return@submit RootShellResult.Failed("TIMEOUT")
-                }
-                shell = current
-                activeShells += current
-                if (!current.isRoot) return@submit RootShellResult.Failed("ROOT_UNAVAILABLE")
+    override fun currentCancellationGeneration(): Long = cancellationGeneration.get()
 
-                val stdout = BoundedLines()
-                val stderr = BoundedLines()
-                val result = current.newJob()
-                    .add(commandText)
-                    .to(stdout, stderr)
-                    .exec()
-                if (stdout.truncated || stderr.truncated) {
-                    return@submit RootShellResult.Failed("OUTPUT_LIMIT")
+    override fun execute(
+        commandText: String,
+        timeoutMs: Long,
+        expectedGeneration: Long,
+    ): RootShellResult {
+        val future: Future<RootShellResult>
+        synchronized(cancellationLock) {
+            if (!isCurrent(expectedGeneration)) return RootShellResult.Failed("ROOT_DISABLED")
+            future = try {
+                workers.submit<RootShellResult> {
+                    runCommand(commandText, timeoutMs, expectedGeneration)
                 }
-                RootShellResult.Completed(
-                    exitCode = result.code,
-                    stdout = stdout.text(),
-                    stderr = stderr.text(),
-                    truncated = false,
-                )
             } catch (_: Throwable) {
-                RootShellResult.Failed("ROOT_UNAVAILABLE")
-            } finally {
-                shell?.let {
-                    activeShells.remove(it)
-                    runCatching { it.close() }
-                }
+                return RootShellResult.Failed("ROOT_UNAVAILABLE")
             }
+            // Register the worker while holding the same lock used to advance
+            // the generation. This closes the submit/cancel window.
+            activeWorkers += future
         }
 
         return try {
@@ -91,19 +79,89 @@ internal class LibsuRootShellRunner(
             future.cancel(true)
             closeActiveShells()
             RootShellResult.Failed("TIMEOUT")
+        } catch (_: CancellationException) {
+            if (!isCurrent(expectedGeneration)) RootShellResult.Failed("ROOT_DISABLED")
+            else RootShellResult.Failed("ROOT_UNAVAILABLE")
         } catch (_: Throwable) {
             RootShellResult.Failed("ROOT_UNAVAILABLE")
+        } finally {
+            activeWorkers.remove(future)
         }
     }
 
     override fun cancelAll() {
+        val workersToCancel = synchronized(cancellationLock) {
+            cancellationGeneration.incrementAndGet()
+            activeWorkers.toList()
+        }
+        workersToCancel.forEach { it.cancel(true) }
         closeActiveShells()
+    }
+
+    private fun isCurrent(expectedGeneration: Long): Boolean =
+        cancellationGeneration.get() == expectedGeneration
+
+    private fun runCommand(
+        commandText: String,
+        timeoutMs: Long,
+        expectedGeneration: Long,
+    ): RootShellResult {
+        if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+            return RootShellResult.Failed("ROOT_DISABLED")
+        }
+        var shell: Shell? = null
+        try {
+            val startupSeconds = ((timeoutMs + 999L) / 1_000L).coerceAtLeast(1L)
+            val current = Shell.Builder.create()
+                .setContext(context)
+                .setTimeout(startupSeconds)
+                .build()
+            // Revocation can happen while libsu is resolving the root shell.
+            // Never register or execute a shell from an obsolete generation.
+            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+                runCatching { current.close() }
+                return RootShellResult.Failed("ROOT_DISABLED")
+            }
+            shell = current
+            activeShells += current
+            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+                return RootShellResult.Failed("ROOT_DISABLED")
+            }
+            if (!current.isRoot) return RootShellResult.Failed("ROOT_UNAVAILABLE")
+
+            val stdout = BoundedLines()
+            val stderr = BoundedLines()
+            if (!isCurrent(expectedGeneration) || Thread.currentThread().isInterrupted) {
+                return RootShellResult.Failed("ROOT_DISABLED")
+            }
+            val result = current.newJob()
+                .add(commandText)
+                .to(stdout, stderr)
+                .exec()
+            if (!isCurrent(expectedGeneration)) return RootShellResult.Failed("ROOT_DISABLED")
+            if (stdout.truncated || stderr.truncated) {
+                return RootShellResult.Failed("OUTPUT_LIMIT")
+            }
+            return RootShellResult.Completed(
+                exitCode = result.code,
+                stdout = stdout.text(),
+                stderr = stderr.text(),
+                truncated = false,
+            )
+        } catch (_: Throwable) {
+            return if (!isCurrent(expectedGeneration)) RootShellResult.Failed("ROOT_DISABLED")
+            else RootShellResult.Failed("ROOT_UNAVAILABLE")
+        } finally {
+            shell?.let {
+                activeShells.remove(it)
+                runCatching { it.close() }
+            }
+        }
     }
 
     private fun closeActiveShells() {
         activeShells.toList().forEach { shell ->
             runCatching { shell.close() }
-            activeShells.remove(shell)
         }
     }
 

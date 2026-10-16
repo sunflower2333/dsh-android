@@ -191,7 +191,17 @@ class AndroidCapabilityManager internal constructor(
         // already been checked for shell metacharacters; quote spaces for the
         // child shell.
         val commandText = argv.joinToString(" ") { "'$it'" }
-        rootBackend?.let { return rootResult(it.execute(commandText, timeoutMs)) }
+        rootBackend?.let { backend ->
+            // Capture a backend cancellation generation after checking the
+            // opt-in state. The second state check closes the window where a
+            // revoke can happen while the generation is being read; the
+            // backend performs the final atomic generation check before it
+            // creates a libsu shell.
+            if (!rootEnabledState.get()) return error("ROOT_DISABLED")
+            val generation = backend.currentCancellationGeneration()
+            if (!rootEnabledState.get()) return error("ROOT_DISABLED")
+            return rootResult(backend.execute(commandText, timeoutMs, generation))
+        }
         return execute(ROOT, listOf(su, "-c", commandText), sessionId, timeoutMs)
     }
 

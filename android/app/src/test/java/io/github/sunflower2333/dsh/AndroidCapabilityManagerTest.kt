@@ -56,7 +56,7 @@ class AndroidCapabilityManagerTest {
 
     @Test fun rootDelegatesToConfiguredRootBackend() {
         val command = AtomicReference<Pair<String, Long>?>(null)
-        val runner = RootShellRunner { text, timeoutMs ->
+        val runner = RootShellRunner { text, timeoutMs, _ ->
             command.set(text to timeoutMs)
             RootShellResult.Completed(0, "uid=0(root)", "", false)
         }
