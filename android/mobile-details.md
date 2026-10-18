@@ -29,11 +29,15 @@ DSH Android 的手机操作通过 Android 11+ 原生无障碍服务执行。它�
 
 `mobile_open_app` 的入参为 `sessionId` 和 `packageName`；旧客户端可继续附带格式有效的 `observationId`。包名只允许常规 Android 点分包名格式，启动目标必须仍有已启用且可导出的桌面入口。不能传递任意组件、链接、Intent 数据或后台窗口目标。成功结果的 `performed: true` 表示 Android 接受了启动操作，`foregroundOnly: true` 描述其前台范围；仍需重新观察确认实际界面。应用可能在两次请求之间被停用或卸载，此时返回 `MOBILE_APP_NOT_AVAILABLE`。
 
-ADB 与 Root Shell 位于同一「手机操作」设置页的可选能力中，默认关闭。用户先通过 Android 文件选择器导入可执行的 ARM64 `adb` 客户端，再手动启用 ADB；USB 或无线设备的序列号由该客户端报告，设置只保存有界序列号，不保存配对凭据。`mobile_adb_status` 是只读状态查询，不需要本次手机控制授权；运行 ADB 命令仍需要有效的 `sessionId`、已启用 ADB 和连接目标。
+ADB 与 Root Shell 位于同一「手机操作」设置页的可选能力中，默认关闭。用户先通过 Android 文件选择器导入与设备兼容的 Android/Bionic ARM64 动态 PIE `adb` 客户端，再手动启用 ADB。客户端保存在应用私有目录，经系统 linker 启动，并使用私有 `HOME` 和 `TMPDIR`。能力设置不保存导入 URI 或配对码；ADB 客户端可在该私有 `HOME` 中管理自己的密钥和已知主机记录。设置保存有界的 USB 或无线设备序列号，留空使用客户端的默认目标。
 
-`mobile_adb_shell` 和 `mobile_root_shell` 只接受有界参数数组，不接受 shell 字符串或 DSH bridge 凭据。Root Shell 只有在设备存在可执行 `su` 且用户明确启用后可用；执行时由 `libsu` 6.0.0 创建隔离 root shell，并把授权交给设备上的 root 管理器（包括 Magisk 和 KernelSU）。停用能力会终止对应的子进程。ADB 传输、无线配对和 Root 授权提示需要真实 Android 设备验证。
+需要 ADB server 的已授权命令会按需启动应用持有的前台 server，使用应用私有目录内的 filesystem Unix socket，并校验目录所有者及 0700 权限；拒绝 TCP 和 abstract socket 端点，避免导入客户端自行启动自身。导入、启用和状态查询不会发起设备连接。`mobile_adb_status` 不启动进程，也不需要本次控制授权；连接状态记录最近一次设备命令的实际验证，不持续探活，版本信息或 connect 回执本身不能证明连接成功。停用能力会终止活跃子进程；重新导入客户端会停止旧的受管 server 并清除连接状态。
 
-`mobile_ui_xml` 要求显式选择 `accessibility_xml` 或 `adb_uiautomator`。前者序列化当前前台无障碍树，后者从选定 ADB 目标读取 `uiautomator` XML。两种来源都限制树深、节点、文本和总字节数，密码字段会脱敏；界面文本仍是外部数据，不是工具指令。
+`mobile_adb_shell` 和 `mobile_root_shell` 需要有效的本次 `sessionId`，只接受有界参数数组，不接受 shell 字符串或继承 DSH bridge 凭据。ADB 目标通过 `serial` 选择，工具不能用全局参数覆盖受管 server 或端点；`start-server`、`kill-server` 作用于该受管 server。Root Shell 只有在设备存在可执行 `su` 且用户明确启用后可用；执行时由 `libsu` 6.0.0 创建隔离 root shell，并把授权交给设备上的 root 管理器（包括 Magisk 和 KernelSU）。能力开关本身不会授予无障碍控制权。
+
+`mobile_ui_xml` 要求显式选择 `accessibility_xml` 或 `adb_uiautomator`。前者序列化当前前台无障碍树；后者把构建时从 Java 源码生成的 DEX helper 推送至选定 ADB 目标的唯一临时 JAR，设为只读后通过 `adb shell -T -n` 和 `app_process` 读取真实的当前窗口，保留远端退出码及独立 stderr。helper 使用 `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`，避免默认 UiAutomation 连接抑制已有无障碍服务；不会调用 stock `uiautomator dump`。推送、权限、读取和清理共享 12 秒预算，每阶段复核原始授权及目标配置，授权仍有效时才尝试移除本次 JAR。ADB XML 限制为 60 KiB、256 次节点访问、深度 48、文本/描述 8192 字符及标识字段 512 字符；超限失败而不返回截断 XML。密码字段会脱敏，界面文本仍是外部数据。该新 helper 的完整 DSH 同设备服务/授权保持效果仍待真实设备验证。
+
+本地 ARM64 软件模拟器中的独立应用 UID 探针已通过标准 ADB reverse 隧道连接模拟器的真实 adbd，验证 TCP 设备状态、Shell 命令和 UI XML。完整 DSH APK 已在本地启动，但 ADB/XML 和 Magisk 正向授权的端到端流程仍未完成；新 flag-1 helper 尚未在该模拟器上执行。该探针没有验证 USB 传输、无线 TLS 配对或 Root 管理器的正向授权。
 
 原生操作反馈默认开启，用户可以在 DSH WebUI 的「手机操作」设置中切换。反馈层提供点击、滑动或操作提示，不属于观察中的目标节点；观察会等待反馈层移除后读取屏幕。反馈只提供操作位置提示，结果是否正确仍以重新观察为准。
 

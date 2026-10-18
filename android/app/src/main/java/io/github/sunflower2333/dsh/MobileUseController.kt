@@ -39,42 +39,59 @@ object MobileUseController {
 
     /** Called only after a genuine user gesture, never a tool RPC or unguarded WebView message. */
     fun resumeFromUser(context: Context): JSONObject {
-        synchronized(lock) {
+        val (epoch, attached, manager) = synchronized(lock) {
             generation++
-            session = if (service != null && isEnabled(context) && !isDeviceLocked(context)) UUID.randomUUID().toString() else null
-            reason = if (session == null) "user_paused" else "user_grant"
+            session = null
+            reason = "user_paused"
             service?.invalidateObservations()
+            Triple(generation, service, capabilityManager)
+        }
+        // Revoke old work before publishing a new UUID, without holding the
+        // grant lock while cancellation waits for child-process registration.
+        manager?.cancelAll()
+        synchronized(lock) {
+            // A concurrent pause/detach wins over this pending user grant.
+            if (generation == epoch && service === attached) {
+                session = if (service != null && isEnabled(context) && !isDeviceLocked(context)) UUID.randomUUID().toString() else null
+                reason = if (session == null) "user_paused" else "user_grant"
+            }
         }
         return status(context)
     }
 
     fun pause(reason: String) {
-        synchronized(lock) {
+        val manager = synchronized(lock) {
             generation++
             session = null
             this.reason = reason
             service?.invalidateObservations()
+            capabilityManager
         }
+        manager?.cancelAll()
     }
 
     internal fun attach(value: MobileAccessibilityService) {
-        synchronized(lock) {
+        val manager = synchronized(lock) {
             generation++
             session = null
             service = value
             reason = "user_paused"
+            capabilityManager
         }
+        manager?.cancelAll()
     }
 
     internal fun detach(value: MobileAccessibilityService) {
-        synchronized(lock) {
+        val manager = synchronized(lock) {
             if (service !== value) return
             generation++
             session = null
             service = null
             currentPackage = null
             reason = "service_disconnected"
+            capabilityManager
         }
+        manager?.cancelAll()
     }
 
     internal fun updatePackage(value: String?) { currentPackage = value }
@@ -131,30 +148,75 @@ object MobileUseController {
         else if (grant == null) complete(failure("paused", "Phone control requires a current native user grant"))
         else when (command) {
             is MobileCommand.AdbShell -> {
-                val result = capabilities(context).executeAdb(
-                    grant.sessionId, command.serial, command.argv, command.timeoutMs
+                val manager = capabilities(context)
+                val prepared = prepareAdb(grant, manager)
+                if (prepared == null) {
+                    complete(failure("paused", "Phone control requires a current native user grant"))
+                    return
+                }
+                var result = manager.executeAdb(
+                    grant.sessionId, command.serial, command.argv, command.timeoutMs, preparedRequest = prepared,
                 )
                 // Keep the requested target explicit in the response metadata. The
                 // manager may select a configured default when serial is omitted;
                 // never expose that value through an untrusted command error.
                 if (result.optBoolean("ok")) {
-                    val configured = capabilities(context).status().let { if (it.isNull("adbTarget")) null else it.optString("adbTarget") }
-                    result.optJSONObject("value")?.put("target", command.serial ?: configured ?: JSONObject.NULL)
+                    result = authorizeAdb(context, grant, manager, prepared,
+                        requireCurrentRequest = command.argv.firstOrNull() !in setOf("disconnect", "kill-server")) ?: result
+                    result.optJSONObject("value")?.put("target", command.serial ?: prepared.configuredTarget ?: JSONObject.NULL)
                 }
                 complete(result)
             }
-            is MobileCommand.RootShell -> complete(capabilities(context).executeRoot(
-                grant.sessionId, command.argv, command.timeoutMs
-            ))
-            is MobileCommand.UiXml -> if (command.source == "adb_uiautomator") {
-                val result = capabilities(context).executeAdb(
-                    grant.sessionId, command.serial,
-                    listOf("shell", "uiautomator", "dump", "/dev/tty")
+            is MobileCommand.RootShell -> {
+                val manager = capabilities(context)
+                val prepared = synchronized(lock) {
+                    if (valid(grant)) manager.prepareRootRequest() else null
+                }
+                if (prepared == null) {
+                    complete(failure("paused", "Phone control requires a current native user grant"))
+                    return
+                }
+                var result = manager.executeRoot(
+                    grant.sessionId, command.argv, command.timeoutMs, preparedRequest = prepared,
                 )
                 if (result.optBoolean("ok")) {
-                    val configured = capabilities(context).status().let { if (it.isNull("adbTarget")) null else it.optString("adbTarget") }
+                    result = when {
+                        !isEnabled(context) -> failure("accessibility_disabled", "Enable DSH accessibility in Android settings")
+                        isDeviceLocked(context) -> {
+                            pause("device_locked")
+                            failure("locked", "Unlock the device before phone control")
+                        }
+                        !valid(grant) -> failure("paused", "Phone control requires a current native user grant")
+                        else -> manager.rootRequestError(prepared)?.let {
+                            failure(it, "Root capability changed during this request")
+                        } ?: result
+                    }
+                }
+                complete(result)
+            }
+            is MobileCommand.UiXml -> if (command.source == "adb_uiautomator") {
+                val manager = capabilities(context)
+                val prepared = prepareAdb(grant, manager)
+                if (prepared == null) {
+                    complete(failure("paused", "Phone control requires a current native user grant"))
+                    return
+                }
+                // Keep every stage on the target selected at request start.
+                // Null retains ADB's single-device selection (multiple devices
+                // are rejected by ADB rather than guessed by this controller).
+                val target = command.serial ?: prepared.configuredTarget
+                val result = AdbUiXmlCapture(
+                    execute = { argv, timeoutMs -> manager.executeAdb(
+                        grant.sessionId, target, argv, timeoutMs, preparedRequest = prepared,
+                    ) },
+                    authorize = { authorizeAdb(context, grant, manager, prepared, requireCurrentRequest = true) },
+                    helperFile = { AdbUiXmlHelperAsset(java.io.File(context.cacheDir, "dsh-ui-xml")) {
+                        context.assets.open("ui-xml/dsh-ui-xml-helper.jar")
+                    }.materialize() },
+                ).capture()
+                if (result.optBoolean("ok")) {
                     result.optJSONObject("value")?.put("source", command.source)
-                        ?.put("target", command.serial ?: configured ?: JSONObject.NULL)
+                        ?.put("target", target ?: JSONObject.NULL)
                 }
                 complete(result)
             } else {
@@ -164,6 +226,27 @@ object MobileUseController {
                 grant.service.execute(command, grant, complete)
             }
             else -> grant.service.execute(command, grant, complete)
+        }
+    }
+
+    private fun prepareAdb(grant: Grant, manager: AndroidCapabilityManager): AndroidCapabilityManager.PreparedAdbRequest? =
+        synchronized(lock) { if (valid(grant)) manager.prepareAdbRequest() else null }
+
+    private fun authorizeAdb(
+        context: Context,
+        grant: Grant,
+        manager: AndroidCapabilityManager,
+        prepared: AndroidCapabilityManager.PreparedAdbRequest,
+        requireCurrentRequest: Boolean,
+    ): JSONObject? {
+        if (!isEnabled(context)) return failure("accessibility_disabled", "Enable DSH accessibility in Android settings")
+        if (isDeviceLocked(context)) {
+            pause("device_locked")
+            return failure("locked", "Unlock the device before phone control")
+        }
+        if (!valid(grant)) return failure("paused", "Phone control requires a current native user grant")
+        return AdbRequestAuthorization.errorCode(manager, prepared, requireCurrentRequest)?.let {
+            failure(it, "ADB capability changed during this request")
         }
     }
 

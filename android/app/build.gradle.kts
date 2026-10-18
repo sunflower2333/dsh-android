@@ -6,6 +6,7 @@ plugins {
 android {
     namespace = "io.github.sunflower2333.dsh"
     compileSdk = 35
+    buildToolsVersion = "35.0.0"
 
     defaultConfig {
         applicationId = "io.github.sunflower2333.dsh"
@@ -33,6 +34,63 @@ android {
     }
     androidResources { noCompress += "zip" }
 }
+
+// This independent shell entry point is shipped as DEX data, not application code.
+// Build it from source so no generated executable needs to be committed.
+val uiXmlHelperClasses = layout.buildDirectory.dir("uiXmlHelper/classes")
+val uiXmlHelperAssetDirectory = layout.buildDirectory.dir("generated/uiXmlHelper/assets")
+val uiXmlHelperAsset = uiXmlHelperAssetDirectory.map { it.file("ui-xml/dsh-ui-xml-helper.jar") }
+val uiXmlHelperAndroidJar = android.sdkDirectory.resolve("platforms/android-35/android.jar")
+val compileUiXmlHelper by tasks.registering(JavaCompile::class) {
+    source(fileTree("src/uiXmlHelper/java") { include("**/*.java") })
+    classpath = files(uiXmlHelperAndroidJar)
+    destinationDirectory.set(uiXmlHelperClasses)
+    options.release.set(8)
+    options.encoding = "UTF-8"
+    options.debugOptions.debugLevel = "source,lines"
+    options.compilerArgs.add("-Xlint:all,-options")
+}
+val uiXmlHelperClassesJar by tasks.registering(Jar::class) {
+    dependsOn(compileUiXmlHelper)
+    from(uiXmlHelperClasses)
+    archiveFileName.set("ui-xml-helper-classes.jar")
+    destinationDirectory.set(layout.buildDirectory.dir("uiXmlHelper"))
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+val generateUiXmlHelper by tasks.registering(JavaExec::class) {
+    dependsOn(uiXmlHelperClassesJar)
+    classpath = files(android.sdkDirectory.resolve("build-tools/35.0.0/lib/d8.jar"))
+    mainClass.set("com.android.tools.r8.D8")
+    inputs.file(uiXmlHelperAndroidJar)
+    inputs.file(uiXmlHelperClassesJar.flatMap { it.archiveFile })
+    outputs.file(uiXmlHelperAsset)
+    doFirst {
+        uiXmlHelperAsset.get().asFile.parentFile.mkdirs()
+        setArgs(listOf("--release", "--min-api", "30", "--lib", uiXmlHelperAndroidJar.absolutePath,
+            "--output", uiXmlHelperAsset.get().asFile.absolutePath,
+            uiXmlHelperClassesJar.get().archiveFile.get().asFile.absolutePath))
+    }
+}
+android.sourceSets.getByName("main").assets.srcDir(uiXmlHelperAssetDirectory)
+tasks.named("preBuild") { dependsOn(generateUiXmlHelper) }
+
+val uiXmlHelperTestClasses = layout.buildDirectory.dir("uiXmlHelper/testClasses")
+val compileUiXmlHelperTest by tasks.registering(JavaCompile::class) {
+    dependsOn(compileUiXmlHelper)
+    source(fileTree("src/uiXmlHelperTest/java") { include("**/*.java") })
+    classpath = files(uiXmlHelperClasses)
+    destinationDirectory.set(uiXmlHelperTestClasses)
+    options.release.set(8)
+    options.encoding = "UTF-8"
+    options.compilerArgs.add("-Xlint:all,-options")
+}
+val testUiXmlHelper by tasks.registering(JavaExec::class) {
+    dependsOn(compileUiXmlHelperTest)
+    classpath = files(uiXmlHelperClasses, uiXmlHelperTestClasses)
+    mainClass.set("io.github.sunflower2333.dsh.uixml.XmlBufferTest")
+}
+tasks.withType<Test>().configureEach { dependsOn(testUiXmlHelper) }
 
 // Runtime assets are produced by the Android runtime packaging step.  Never
 // create an empty placeholder: an APK without DSH is unusable.

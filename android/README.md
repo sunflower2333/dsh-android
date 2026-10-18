@@ -205,29 +205,51 @@ DSH's existing tool approval policy continues to apply.
 
 ### ADB, Root Shell and UI XML
 
-The same **Mobile use** settings section also contains the optional ADB and
-Root Shell capabilities. A user must import an executable **ARM64** `adb`
-client through Android's file picker before enabling ADB. The imported file is
-copied into app-private storage; its source URI and any pairing credentials are
-not retained. USB devices and wireless targets use the serial reported by that
-ADB client. The target field stores only a bounded serial, and an empty field
-uses the client's default target.
+The same **Mobile use** settings section contains optional ADB and Root Shell
+capabilities, each disabled by default. Import a device-compatible
+Android/Bionic **ARM64 dynamic PIE** `adb` client through Android's file picker,
+then enable ADB. DSH copies it into app-private storage and runs it through the
+system linker with private `HOME` and `TMPDIR` directories. Capability settings
+do not retain the source URI or pairing codes; the ADB client can store its own
+keys and known-host records in that private `HOME`. The target field stores a
+bounded USB or wireless serial reported by the client; an empty field uses the
+client's default target.
 
-Both capabilities are disabled by default and each has its own explicit enable
-switch. `mobile_adb_status` only reports capability state. `mobile_adb_shell`
-accepts a bounded argument array and runs the selected ADB target without a
-shell string or inherited DSH token environment. `mobile_root_shell` is
-available only when the device exposes an executable `su`; after the user
-enables Root Shell, DSH creates an isolated root shell through `libsu` 6.0.0.
-`libsu` delegates authorization to the installed root manager, including
-Magisk and KernelSU. Disabling either capability cancels its active child
-process. A capability setting never grants Accessibility control.
+An authorized command that needs an ADB server starts an app-owned foreground
+server on an app-private filesystem Unix socket in an owner-verified mode-0700
+directory, avoiding the imported client's self-launch path. TCP and abstract
+socket endpoints are rejected. Importing, enabling and querying status do not connect to a
+device. `mobile_adb_status` starts no process; its connected state records the
+latest device-command verification, rather than continuously probing the
+device. Client version and connect acknowledgements alone do not establish
+that state. Disabling a capability stops active child processes; replacing
+the client stops its old managed server and clears the
+connection state.
+
+`mobile_adb_shell` and `mobile_root_shell` require the current control grant and
+accept bounded argument arrays without a shell string or inherited DSH token
+environment. Select the ADB target through `serial`; global server and endpoint
+overrides are rejected, and `start-server`/`kill-server` operate on the managed
+server. Root Shell requires an executable `su` and the user's explicit enable
+switch. DSH then creates an isolated shell through `libsu` 6.0.0, which delegates
+authorization to the installed root manager, including Magisk and KernelSU.
+A capability setting never grants Accessibility control.
 
 `mobile_ui_xml` explicitly selects one bounded XML source. `accessibility_xml`
 serializes the current foreground Accessibility tree, while `adb_uiautomator`
-uses the selected ADB target. Both sources cap depth, nodes, text and bytes;
-password fields are redacted and screen text remains untrusted data. The
-normal `mobile_observe` JSON and screenshot behavior are unchanged.
+pushes a source-generated DEX helper JAR to a unique path on the selected ADB
+target and makes it read-only. The helper runs through `adb shell -T -n` and
+`app_process`, preserving remote exit status and separate stderr. It reads real
+active-window nodes with `FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES` (flag 1),
+avoiding stock `uiautomator dump`'s default suppression of existing services.
+Push, chmod, capture and authorized cleanup share one 12-second budget and retain
+the original grant and target-configuration checks. ADB XML fails closed above
+60 KiB, 256 node visits, depth 48, 8192 characters per text/description or 512 per
+identifier field. Password text and descriptions are blank and screen text
+remains untrusted data. Gradle generates the helper from Java sources and runs
+its encoder checks with the normal JVM test task; no generated binary is tracked.
+Same-device Accessibility/grant preservation and complete DSH ADB/XML and
+Magisk workflows remain unverified on a real device or emulator.
 
 The host integration checks use the real DSH tool runtime and an isolated
 socket fixture:
@@ -241,12 +263,15 @@ node scripts/test-android-workspace.mjs /path/to/dsh-package
 
 The Android workflow first runs the package-free source fixture check, then
 runs these package integration checks before compiling Node. It runs native
-JVM tests and Android lint before assembling and signing the APK. The cloud
-build host has no real ARM64 Android emulator, hardware acceleration or rooted
-Android device, so CI does not claim to validate USB/wireless ADB transport,
-`su`, Android WebView lifetime, or Accessibility behavior. Those require an
-ARM64 device or a separately provisioned software emulator; the host fixtures
-validate the protocol, bounds, redaction and stable error mapping only.
+JVM tests and Android lint before assembling and signing the APK. The host
+fixtures validate protocol, bounds, redaction and stable error mapping; Android
+behavior is checked separately on ARM64 hardware or a software emulator. An
+independent app-UID probe on the local ARM64 software emulator has exercised
+TCP device state, shell commands and UI XML through a standard ADB reverse
+tunnel to the emulator's real adbd. The complete DSH APK has started locally,
+but end-to-end validation of its ADB/XML paths is still pending. The new flag-1
+helper has not run on that emulator. USB transport, wireless TLS pairing and root-manager
+authorization have not been validated by that probe.
 
 The optional `scripts/test-support/nim-test-relay.py` and
 `verify-mobile-nim.py` are bounded test helpers for a separately configured
